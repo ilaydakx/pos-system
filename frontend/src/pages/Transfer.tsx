@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 
@@ -26,7 +26,6 @@ type CartLine = {
 };
 
 export function Transfer() {
-  const [dbStatus, setDbStatus] = useState("DB: ...");
   const [err, setErr] = useState<string>("");
   const [busy, setBusy] = useState(false);
 
@@ -38,13 +37,7 @@ export function Transfer() {
 
   const [cart, setCart] = useState<CartLine[]>([]);
 
-  useEffect(() => {
-    invoke<string>("ping_db")
-      .then((s) => setDbStatus(`DB: ${s}`))
-      .catch((e) => setDbStatus(`DB: ${String(e)}`));
-
-    setTimeout(() => inputRef.current?.focus(), 50);
-  }, []);
+  
 
   const linesCount = cart.length;
 

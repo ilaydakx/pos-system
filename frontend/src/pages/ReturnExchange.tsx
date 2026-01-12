@@ -5,7 +5,6 @@ import { confirm, message } from "@tauri-apps/plugin-dialog";
 
 type Loc = "MAGAZA" | "DEPO";
 
-type PaymentMethod = "CASH" | "CARD";
 
 type Product = {
   barcode: string;

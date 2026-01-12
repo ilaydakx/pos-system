@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 
@@ -33,7 +33,6 @@ type RowStatus = {
 };
 
 export function StockControl() {
-  const [dbStatus, setDbStatus] = useState("DB: ...");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string>("");
   const [rows, setRows] = useState<Product[]>([]);
@@ -58,13 +57,7 @@ export function StockControl() {
     }
   };
 
-  useEffect(() => {
-    invoke<string>("ping_db")
-      .then((s) => setDbStatus(`DB: ${s}`))
-      .catch((e) => setDbStatus(`DB: ${String(e)}`));
-
-    load();
-  }, []);
+  
 
   const computed = useMemo(() => {
     const t = q.trim().toLowerCase();
