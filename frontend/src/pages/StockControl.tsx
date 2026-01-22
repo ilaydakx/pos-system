@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 
@@ -56,6 +56,10 @@ export function StockControl() {
       setLoading(false);
     }
   };
+  useEffect(() => {
+  load();
+}, []);
+
 
   
 
