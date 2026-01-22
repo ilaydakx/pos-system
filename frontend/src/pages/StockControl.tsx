@@ -296,6 +296,7 @@ export function StockControl() {
                   <tr key={p.barcode} style={rowStyle.tr}>
                     <td style={{ ...cell, ...rowStyle.cell }}>
                       {renderStatus(status)}
+                      <div style={{fontSize: 12, opacity: .6}}>StockControl mounted ✅</div>
                       {legacyStock && (
                         <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
                           (Eski stok alanı)

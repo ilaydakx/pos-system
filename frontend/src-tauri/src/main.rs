@@ -453,6 +453,34 @@ fn main() {
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
     .setup(|app| {
+  let app_dir = app.path().app_data_dir().map_err(|e| e.to_string()).unwrap();
+  std::fs::create_dir_all(&app_dir).ok();
+  let log_path = app_dir.join("debug.log");
+
+  let log = |msg: &str| {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+      let _ = writeln!(f, "{}", msg);
+    }
+  };
+
+  log("[BOOT] start");
+  log(&format!("[BOOT] app_dir={}", app_dir.to_string_lossy()));
+
+  match db::init(&app.handle()) {
+    Ok(_) => log("[DB] init OK"),
+    Err(e) => {
+      log(&format!("[DB] init ERR: {}", e));
+      return Err(tauri::Error::Setup(
+        std::io::Error::new(std::io::ErrorKind::Other, e).into(),
+      ));
+    }
+  }
+
+  Ok(())
+})
+    /*
+    .setup(|app| {
       // DB init / migrations
       db::init(&app.handle()).map_err(|e| {
         let err: Box<dyn std::error::Error> =
@@ -460,7 +488,7 @@ fn main() {
         tauri::Error::Setup(err.into())
       })?;
       Ok(())
-    })
+    })*/
     // pencere kapanırken otomatik yedek
     .on_window_event(|window, event| {
       if let tauri::WindowEvent::CloseRequested { .. } = event {
