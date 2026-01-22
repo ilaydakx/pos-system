@@ -57,10 +57,8 @@ export function StockControl() {
     }
   };
   useEffect(() => {
-  load();
-}, []);
-
-
+    load();
+  }, []);
   
 
   const computed = useMemo(() => {
