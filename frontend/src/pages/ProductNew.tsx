@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
@@ -76,18 +76,7 @@ export function ProductNew() {
   // Tek ekranda çoklu beden+stok (varyant modu)
   const [variantLines, setVariantLines] = useState<VariantLine[]>([]);
 
-  // Satır ekle kısmında gerçekten veri var mı?
-  const hasRowData = useMemo(() => {
-    return variantLines.some((r) => {
-      const s = (r.size || "").trim();
-      const ms = (r.magaza || "").trim();
-      const ds = (r.depo || "").trim();
-      return Boolean(s || ms || ds);
-    });
-  }, [variantLines]);
-  
-  // Kaydederken satır ekle satırları varsa onları da ekleriz ama üstteki tekli ürünü ASLA yok saymayız.
-  const isMulti = hasRowData;
+
 
   // Normal mod stok alanları
   const [size, setSize] = useState("");
