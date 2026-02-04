@@ -44,6 +44,8 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
   .map_err(|e| e.to_string())?;
 
   migrate(&conn)?;
+  seed_option_tables(&conn)?;
+  seed_default_dictionaries(&conn)?;
 
   Ok(())
 }
@@ -55,12 +57,98 @@ pub fn ping() -> Result<String, String> {
     .map_err(|e| e.to_string())?;
   Ok("OK (sqlite)".to_string())
 }
+// -------------------- INPUT NORMALIZATION (DB layer) --------------------
+
+fn norm_opt(s: Option<String>) -> Option<String> {
+  s.and_then(|v| {
+    let t = v.trim().to_string();
+    if t.is_empty() { None } else { Some(t) }
+  })
+}
+
+fn norm_req(field: &str, s: &str) -> Result<String, String> {
+  let t = s.trim();
+  if t.is_empty() { Err(format!("{} zorunlu", field)) } else { Ok(t.to_string()) }
+}
+
+fn normalize_prefix_from_category(cat: Option<&str>) -> String {
+  // kategori prefix: TR harflerini ASCII'ye çevir, sadece A-Z0-9, max 3; yoksa PRD
+  let raw = cat.unwrap_or("").trim();
+
+  // Türkçe karakterleri ASCII'ye indir
+  let mut normalized = String::with_capacity(raw.len());
+  for ch in raw.chars() {
+    let mapped = match ch {
+      'ç' | 'Ç' => 'C',
+      'ğ' | 'Ğ' => 'G',
+      'ı' | 'İ' => 'I',
+      'ö' | 'Ö' => 'O',
+      'ş' | 'Ş' => 'S',
+      'ü' | 'Ü' => 'U',
+      _ => ch,
+    };
+    normalized.push(mapped);
+  }
+
+  let up = normalized.to_uppercase();
+
+  let mut out = String::new();
+  for ch in up.chars() {
+    if ch.is_ascii_alphanumeric() {
+      out.push(ch);
+    }
+    if out.len() == 3 { break; }
+  }
+
+  if out.len() < 3 {
+    // 3 harfe tamamla (mesela "ST" kalırsa "STX" gibi)
+    while out.len() < 3 {
+      out.push('X');
+    }
+  }
+
+  if out == "XXX" { "PRD".to_string() } else { out }
+}
+
+fn next_product_code_for_prefix(conn: &Connection, prefix: &str) -> Result<String, String> {
+  // product_code format: PREFIX + 3 digits (e.g. ETK001)
+  let like = format!("{}%", prefix);
+  let start_pos: i64 = (prefix.len() as i64) + 1; // SUBSTR is 1-based
+
+  let max_n: Option<i64> = conn
+    .query_row(
+      r#"
+      SELECT MAX(CAST(SUBSTR(TRIM(product_code), ?2) AS INTEGER))
+      FROM products
+      WHERE product_code IS NOT NULL
+        AND TRIM(product_code) <> ''
+        AND UPPER(product_code) LIKE UPPER(?1)
+        AND LENGTH(TRIM(product_code)) >= (?2 + 2)
+      "#,
+      params![like, start_pos],
+      |r| r.get::<_, Option<i64>>(0),
+    )
+    .map_err(|e| e.to_string())?;
+
+  let next = max_n.unwrap_or(0) + 1;
+  if next > 999 {
+    return Err(format!("{} için product_code limiti doldu (999)", prefix));
+  }
+
+  Ok(format!("{}{:03}", prefix, next))
+}
+
 
 /// DB’den otomatik barkod üretir
 fn next_barcode(conn: &Connection) -> Result<String, String> {
   let max_opt: Option<i64> = conn
     .query_row(
-      "SELECT MAX(CAST(barcode AS INTEGER)) FROM products",
+      r#"
+      SELECT MAX(CAST(barcode AS INTEGER))
+      FROM products
+      WHERE TRIM(barcode) <> ''
+        AND TRIM(barcode) GLOB '[0-9]*'
+      "#,
       [],
       |row| row.get::<_, Option<i64>>(0),
     )
@@ -68,7 +156,8 @@ fn next_barcode(conn: &Connection) -> Result<String, String> {
 
   let start: i64 = 1_000_001;
   let next = match max_opt {
-    Some(m) => m + 1,
+    Some(m) if m >= start => m + 1,
+    Some(_) => start,
     None => start,
   };
 
@@ -95,6 +184,13 @@ pub struct Product {
   pub magaza_stok: i64,
   pub depo_stok: i64,
 }
+
+#[derive(Debug, Clone)]
+pub struct CreatedProduct {
+  pub barcode: String,
+  pub product_code: Option<String>,
+}
+
 #[derive(serde::Serialize)]
 pub struct SaleLine {
   pub sold_at: String,
@@ -102,7 +198,7 @@ pub struct SaleLine {
   pub unit_price: f64,
   pub total: f64,
   pub sold_from: String,
-  pub refunded_qty: Option<i64>,
+  pub refunded_qty: i64,
 }
 
 #[derive(serde::Deserialize)]
@@ -115,6 +211,7 @@ pub struct CreateReturnPayload {
   pub unit_price: f64,
 }
 
+#[derive(serde::Serialize)]
 pub struct CreateReturnResult {
   pub return_group_id: String,
   pub lines: i64,
@@ -141,9 +238,6 @@ pub struct CreateExchangeGivenItemPayload {
 
 #[derive(serde::Deserialize)]
 pub struct CreateExchangeSummaryPayload {
-  pub returned_total: f64,
-  pub given_total: f64,
-  pub diff: f64,
   pub diff_payment_method: Option<String>, 
 }
 
@@ -154,6 +248,8 @@ pub struct CreateExchangePayload {
   pub summary: CreateExchangeSummaryPayload,
 }
 
+
+#[derive(serde::Serialize)]
 pub struct CreateExchangeResult {
   pub exchange_group_id: String,
   pub lines: i64,
@@ -217,59 +313,7 @@ pub fn list_products() -> Result<Vec<Product>, String> {
   }
   Ok(out)
 }
-pub fn find_product(barcode: &str) -> Result<Option<Product>, String> {
-  let conn = get_conn()?;
 
-  let mut stmt = conn
-    .prepare(
-      r#"
-      SELECT
-        barcode,
-        product_code,
-        category,
-        name,
-        color,
-        size,
-        COALESCE(buy_price, 0),
-        sell_price,
-        created_at,
-        COALESCE(stock, 0),
-        COALESCE(magaza_baslangic, 0),
-        COALESCE(depo_baslangic, 0),
-        COALESCE(magaza_stok, 0),
-        COALESCE(depo_stok, 0)
-      FROM products
-      WHERE barcode = ?1
-      LIMIT 1
-      "#,
-    )
-    .map_err(|e| e.to_string())?;
-
-  let row = stmt
-    .query_row(params![barcode], |r| {
-      Ok(Product {
-        barcode: r.get(0)?,
-        product_code: r.get(1)?,
-        category: r.get(2)?,
-        name: r.get(3)?,
-        color: r.get(4)?,
-        size: r.get(5)?,
-        buy_price: r.get(6)?,
-        sell_price: r.get(7)?,
-        created_at: r.get(8)?, 
-
-        stock: r.get(9)?,
-        magaza_baslangic: r.get(10)?,
-        depo_baslangic: r.get(11)?,
-        magaza_stok: r.get(12)?,
-        depo_stok: r.get(13)?,
-      })
-    })
-    .optional()
-    .map_err(|e| e.to_string())?;
-
-  Ok(row)
-}
 
 pub fn find_product_by_barcode(barcode: &str) -> Result<Option<Product>, String> {
   let conn = get_conn()?;
@@ -324,7 +368,7 @@ pub fn find_product_by_barcode(barcode: &str) -> Result<Option<Product>, String>
   Ok(row)
 }
 
-
+/*
 pub fn add_product(
   barcode: Option<String>,
   product_code: Option<String>,
@@ -340,16 +384,30 @@ pub fn add_product(
 ) -> Result<String, String> {
   let conn = get_conn()?;
 
-  if name.trim().is_empty() {
-    return Err("Ürün adı zorunlu".to_string());
-  }
+  let name = norm_req("Ürün adı", &name)?;
   if !sell_price.is_finite() {
     return Err("Satış fiyatı sayı olmalı".to_string());
   }
 
-  let final_barcode = match barcode.map(|b| b.trim().to_string()) {
-    Some(b) if !b.is_empty() => b,
-    _ => next_barcode(&conn)?,
+  let final_barcode = match norm_opt(barcode) {
+    Some(b) => b,
+    None => next_barcode(&conn)?,
+  };
+
+  let category = norm_opt(category);
+  let color = norm_opt(color);
+  let size = norm_opt(size);
+
+  // product_code: ürün ailesi kodu (varyantlar aynı kodu paylaşabilir)
+  // Kullanıcı bir kod verdiyse ASLA otomatik değiştir/bump yapma.
+  // Kod yoksa: kategori prefix + 3 haneli artan (ETK001) üret.
+  let product_code = match norm_opt(product_code) {
+    Some(pc) => Some(pc.trim().to_uppercase().replace('-', "")),
+    None => {
+      let prefix = normalize_prefix_from_category(category.as_deref());
+      let pc = next_product_code_for_prefix(&conn, &prefix)?;
+      Some(pc)
+    }
   };
 
   let bp = buy_price.unwrap_or(0.0);
@@ -373,7 +431,7 @@ pub fn add_product(
       final_barcode,
       product_code,
       category,
-      name.trim(),
+      name,
       color,
       size,
       bp,
@@ -388,7 +446,86 @@ pub fn add_product(
   .map_err(|e| e.to_string())?;
 
   Ok(final_barcode)
+}*/
+pub fn add_product(
+  barcode: Option<String>,
+  product_code: Option<String>,
+  category: Option<String>,
+  name: String,
+  color: Option<String>,
+  size: Option<String>,
+  buy_price: Option<f64>,
+  sell_price: f64,
+  stock: Option<i64>,
+  magaza_baslangic: Option<i64>,
+  depo_baslangic: Option<i64>,
+) -> Result<CreatedProduct, String> {
+  let conn = get_conn()?;
+
+  let name = norm_req("Ürün adı", &name)?;
+  if !sell_price.is_finite() {
+    return Err("Satış fiyatı sayı olmalı".to_string());
+  }
+
+  let final_barcode = match norm_opt(barcode) {
+    Some(b) => b,
+    None => next_barcode(&conn)?,
+  };
+
+  let category = norm_opt(category);
+  let color = norm_opt(color);
+  let size = norm_opt(size);
+
+  let product_code_final: Option<String> = match norm_opt(product_code) {
+    Some(pc) => Some(pc.trim().to_uppercase().replace('-', "")),
+    None => {
+      let prefix = normalize_prefix_from_category(category.as_deref());
+      let pc = next_product_code_for_prefix(&conn, &prefix)?;
+      Some(pc)
+    }
+  };
+
+  let bp = buy_price.unwrap_or(0.0);
+  let mb = magaza_baslangic.unwrap_or(0);
+  let db = depo_baslangic.unwrap_or(0);
+
+  let st = stock.unwrap_or(mb + db);
+
+  let ms = mb;
+  let ds = db;
+
+  conn.execute(
+    r#"
+    INSERT INTO products
+      (barcode, product_code, category, name, color, size, buy_price, sell_price, stock,
+       magaza_baslangic, depo_baslangic, magaza_stok, depo_stok)
+    VALUES
+      (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+    "#,
+    params![
+      final_barcode,
+      product_code_final,
+      category,
+      name,
+      color,
+      size,
+      bp,
+      sell_price,
+      st,
+      mb,
+      db,
+      ms,
+      ds
+    ],
+  )
+  .map_err(|e| e.to_string())?;
+
+  Ok(CreatedProduct {
+    barcode: final_barcode,
+    product_code: product_code_final,
+  })
 }
+
 // dashboard
 fn scalar_f64(conn: &rusqlite::Connection, sql: &str, p: &[&dyn rusqlite::ToSql]) -> f64 {
   match conn.query_row(sql, p, |row| row.get::<_, f64>(0)) {
@@ -402,6 +539,591 @@ fn scalar_i64(conn: &rusqlite::Connection, sql: &str, p: &[&dyn rusqlite::ToSql]
     Ok(v) => v,
     Err(_) => 0,
   }
+}
+#[derive(serde::Deserialize)]
+pub struct UpdateProductPayload {
+  pub barcode: String,
+  pub product_code: Option<String>,
+  pub category: Option<String>,
+  pub name: String,
+  pub color: Option<String>,
+  pub size: Option<String>,
+  pub buy_price: Option<f64>,
+  pub sell_price: f64,
+}
+
+pub fn update_product(payload: UpdateProductPayload) -> Result<i64, String> {
+  let conn = get_conn()?;
+
+  let bc = payload.barcode.trim();
+  if bc.is_empty() {
+    return Err("Barkod zorunlu".to_string());
+  }
+  let name = norm_req("Ürün adı", &payload.name)?;
+
+  // product_code: varyant ailesi kodu. Unique değil.
+  // UI boş gönderirse mevcut değer korunmalı.
+  let product_code = norm_opt(payload.product_code)
+    .map(|pc| pc.trim().to_uppercase().replace('-', ""));
+  let category = norm_opt(payload.category);
+  let color = norm_opt(payload.color);
+  let size = norm_opt(payload.size);
+
+  if !payload.sell_price.is_finite() {
+    return Err("Satış fiyatı sayı olmalı".to_string());
+  }
+
+  let bp = payload.buy_price.unwrap_or(0.0);
+
+  let changed = conn
+    .execute(
+      r#"
+      UPDATE products
+      SET
+        product_code = COALESCE(?2, product_code),
+        category     = ?3,
+        name         = ?4,
+        color        = ?5,
+        size         = ?6,
+        buy_price    = ?7,
+        sell_price   = ?8,
+        updated_at   = datetime('now','localtime')
+      WHERE barcode = ?1
+        AND COALESCE(is_active,1)=1
+      "#,
+      params![
+        bc,
+        product_code,
+        category,
+        name,
+        color,
+        size,
+        bp,
+        payload.sell_price
+      ],
+    )
+    .map_err(|e| e.to_string())?;
+
+  Ok(changed as i64)
+}
+#[derive(serde::Serialize)]
+pub struct CategoryRow {
+  pub id: i64,
+  pub name: String,
+  pub is_active: i64,
+  pub created_at: Option<String>,
+}
+pub fn list_categories_full(include_inactive: bool) -> Result<Vec<CategoryRow>, String> {
+  let conn = get_conn()?;
+  let include = if include_inactive { 1 } else { 0 };
+
+  let mut st = conn
+    .prepare(
+      r#"
+      SELECT id, name, COALESCE(is_active,1) AS is_active, created_at
+      FROM categories
+      WHERE (?1 = 1) OR COALESCE(is_active,1)=1
+      ORDER BY name ASC
+      "#,
+    )
+    .map_err(|e| e.to_string())?;
+
+  let rows = st
+    .query_map(params![include], |r| {
+      Ok(CategoryRow {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        is_active: r.get(2)?,
+        created_at: r.get(3)?,
+      })
+    })
+    .map_err(|e| e.to_string())?;
+
+  let mut out = Vec::new();
+  for x in rows {
+    out.push(x.map_err(|e| e.to_string())?);
+  }
+  Ok(out)
+}
+
+
+
+#[derive(serde::Serialize)]
+pub struct ColorRow {
+  pub id: i64,
+  pub name: String,
+  pub is_active: i64,
+  pub created_at: Option<String>,
+}
+
+pub fn list_colors_full(include_inactive: bool) -> Result<Vec<ColorRow>, String> {
+  let conn = get_conn()?;
+  let include = if include_inactive { 1 } else { 0 };
+
+  let mut st = conn
+    .prepare(
+      r#"
+      SELECT id, name, COALESCE(is_active,1) AS is_active, created_at
+      FROM colors
+      WHERE (?1 = 1) OR COALESCE(is_active,1)=1
+      ORDER BY name ASC
+      "#,
+    )
+    .map_err(|e| e.to_string())?;
+
+  let rows = st
+    .query_map(params![include], |r| {
+      Ok(ColorRow {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        is_active: r.get(2)?,
+        created_at: r.get(3)?,
+      })
+    })
+    .map_err(|e| e.to_string())?;
+
+  let mut out = Vec::new();
+  for x in rows {
+    out.push(x.map_err(|e| e.to_string())?);
+  }
+  Ok(out)
+}
+
+
+// ------- Helper functions to count products using a category/color/size -------
+fn count_products_using_category(tx: &rusqlite::Connection, id: i64, name: &str) -> i64 {
+  let used_by_id: i64 = tx
+    .query_row(
+      "SELECT COALESCE(COUNT(*),0) FROM products WHERE COALESCE(category_id,0)=?1",
+      params![id],
+      |r| r.get(0),
+    )
+    .unwrap_or(0);
+
+  let used_by_text: i64 = tx
+    .query_row(
+      "SELECT COALESCE(COUNT(*),0) FROM products WHERE TRIM(COALESCE(category,'')) = TRIM(?1)",
+      params![name],
+      |r| r.get(0),
+    )
+    .unwrap_or(0);
+
+  used_by_id + used_by_text
+}
+
+fn count_products_using_color(tx: &rusqlite::Connection, id: i64, name: &str) -> i64 {
+  let used_by_id: i64 = tx
+    .query_row(
+      "SELECT COALESCE(COUNT(*),0) FROM products WHERE COALESCE(color_id,0)=?1",
+      params![id],
+      |r| r.get(0),
+    )
+    .unwrap_or(0);
+
+  let used_by_text: i64 = tx
+    .query_row(
+      "SELECT COALESCE(COUNT(*),0) FROM products WHERE TRIM(COALESCE(color,'')) = TRIM(?1)",
+      params![name],
+      |r| r.get(0),
+    )
+    .unwrap_or(0);
+
+  used_by_id + used_by_text
+}
+
+fn count_products_using_size(tx: &rusqlite::Connection, id: i64, name: &str) -> i64 {
+  let used_by_id: i64 = tx
+    .query_row(
+      "SELECT COALESCE(COUNT(*),0) FROM products WHERE COALESCE(size_id,0)=?1",
+      params![id],
+      |r| r.get(0),
+    )
+    .unwrap_or(0);
+
+  let used_by_text: i64 = tx
+    .query_row(
+      "SELECT COALESCE(COUNT(*),0) FROM products WHERE TRIM(COALESCE(size,'')) = TRIM(?1)",
+      params![name],
+      |r| r.get(0),
+    )
+    .unwrap_or(0);
+
+  used_by_id + used_by_text
+}
+pub fn update_color(id: i64, name: Option<String>, is_active: Option<i64>) -> Result<i64, String> {
+  if id <= 0 {
+    return Err("id geçersiz".to_string());
+  }
+
+  let conn = get_conn()?;
+
+  let exists: Option<i64> = conn
+    .query_row("SELECT id FROM colors WHERE id=?1", params![id], |r| r.get(0))
+    .optional()
+    .map_err(|e| e.to_string())?;
+
+  if exists.is_none() {
+    return Err("Renk bulunamadı".to_string());
+  }
+
+  let mut changed: i64 = 0;
+
+  if let Some(n) = name {
+    let t = n.trim();
+    if t.is_empty() {
+      return Err("Renk adı boş olamaz".to_string());
+    }
+
+    let c = conn
+      .execute("UPDATE colors SET name=?2 WHERE id=?1", params![id, t])
+      .map_err(|e| e.to_string())?;
+    changed += c as i64;
+  }
+
+  if let Some(a) = is_active {
+    let v = if a == 0 { 0 } else { 1 };
+
+    // Eğer pasife alınacaksa ve ürünlerde kullanılıyorsa engelle
+    if v == 0 {
+      let color_name: String = conn
+        .query_row("SELECT name FROM colors WHERE id=?1", params![id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+      let used = count_products_using_color(&conn, id, &color_name);
+      if used > 0 {
+        return Err("Bu renk ürünlerde kullanılıyor; pasife alınamaz".to_string());
+      }
+    }
+
+    let c = conn
+      .execute("UPDATE colors SET is_active=?2 WHERE id=?1", params![id, v])
+      .map_err(|e| e.to_string())?;
+    changed += c as i64;
+  }
+
+  Ok(changed)
+}
+
+pub fn delete_color(id: i64) -> Result<i64, String> {
+  if id <= 0 {
+    return Err("id geçersiz".to_string());
+  }
+
+  let mut conn = get_conn()?;
+  let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+  let color_name: Option<String> = tx
+    .query_row("SELECT name FROM colors WHERE id=?1", params![id], |r| r.get(0))
+    .optional()
+    .map_err(|e| e.to_string())?;
+
+  let color_name = color_name.ok_or_else(|| "Renk bulunamadı".to_string())?;
+
+  let used = count_products_using_color(&tx, id, &color_name);
+
+  if used > 0 {
+    return Err("Bu renk ürünlerde kullanılıyor; silinemez / pasife alınamaz".to_string());
+  }
+
+  // hiç kullanılmamışsa hard delete
+  let c = tx
+    .execute("DELETE FROM colors WHERE id=?1", params![id])
+    .map_err(|e| e.to_string())?;
+
+  tx.commit().map_err(|e| e.to_string())?;
+  Ok(c as i64)
+}
+pub fn add_category(name: String) -> Result<i64, String> {
+  let conn = get_conn()?;
+  let n = name.trim();
+  if n.is_empty() {
+    return Err("Kategori adı boş olamaz".to_string());
+  }
+
+  conn.execute(
+    "INSERT OR IGNORE INTO categories(name, is_active) VALUES (?1, 1)",
+    params![n],
+  ).map_err(|e| e.to_string())?;
+
+  Ok(1)
+}
+
+pub fn create_category(name: String) -> Result<i64, String> {
+  add_category(name)
+}
+pub fn update_category(id: i64, name: Option<String>, is_active: Option<i64>) -> Result<i64, String> {
+  if id <= 0 {
+    return Err("id geçersiz".to_string());
+  }
+
+  let conn = get_conn()?;
+
+  let exists: Option<i64> = conn
+    .query_row("SELECT id FROM categories WHERE id=?1", params![id], |r| r.get(0))
+    .optional()
+    .map_err(|e| e.to_string())?;
+
+  if exists.is_none() {
+    return Err("Kategori bulunamadı".to_string());
+  }
+
+  let mut changed: i64 = 0;
+
+  if let Some(n) = name {
+    let t = n.trim();
+    if t.is_empty() {
+      return Err("Kategori adı boş olamaz".to_string());
+    }
+
+    let c = conn
+      .execute("UPDATE categories SET name=?2 WHERE id=?1", params![id, t])
+      .map_err(|e| e.to_string())?;
+    changed += c as i64;
+  }
+
+  if let Some(a) = is_active {
+    let v = if a == 0 { 0 } else { 1 };
+
+    if v == 0 {
+      let cat_name: String = conn
+        .query_row("SELECT name FROM categories WHERE id=?1", params![id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+      let used = count_products_using_category(&conn, id, &cat_name);
+      if used > 0 {
+        return Err("Bu kategori ürünlerde kullanılıyor; pasife alınamaz".to_string());
+      }
+    }
+
+    let c = conn
+      .execute("UPDATE categories SET is_active=?2 WHERE id=?1", params![id, v])
+      .map_err(|e| e.to_string())?;
+    changed += c as i64;
+  }
+
+  Ok(changed)
+}
+
+pub fn delete_category(id: i64) -> Result<i64, String> {
+  if id <= 0 {
+    return Err("id geçersiz".to_string());
+  }
+
+  let mut conn = get_conn()?;
+  let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+  let cat_name: Option<String> = tx
+    .query_row("SELECT name FROM categories WHERE id=?1", params![id], |r| r.get(0))
+    .optional()
+    .map_err(|e| e.to_string())?;
+
+  let cat_name = cat_name.ok_or_else(|| "Kategori bulunamadı".to_string())?;
+
+  let used = count_products_using_category(&tx, id, &cat_name);
+
+  if used > 0 {
+    return Err("Bu kategori ürünlerde kullanılıyor; silinemez / pasife alınamaz".to_string());
+  }
+
+  let c = tx
+    .execute("DELETE FROM categories WHERE id=?1", params![id])
+    .map_err(|e| e.to_string())?;
+
+  tx.commit().map_err(|e| e.to_string())?;
+  Ok(c as i64)
+}
+
+pub fn add_color(name: String) -> Result<i64, String> {
+  let conn = get_conn()?;
+  let n = name.trim();
+  if n.is_empty() {
+    return Err("Renk adı boş olamaz".to_string());
+  }
+
+  conn.execute(
+    "INSERT OR IGNORE INTO colors(name, is_active) VALUES (?1, 1)",
+    params![n],
+  ).map_err(|e| e.to_string())?;
+
+  Ok(1)
+}
+
+pub fn create_color(name: String) -> Result<i64, String> {
+  add_color(name)
+}
+
+pub fn add_size(name: String, order_no: Option<i64>) -> Result<i64, String> {
+  let conn = get_conn()?;
+  let n = name.trim();
+  if n.is_empty() {
+    return Err("Beden adı boş olamaz".to_string());
+  }
+
+  let so = order_no.unwrap_or(0);
+
+  // new column
+  conn.execute(
+    "INSERT OR IGNORE INTO sizes(name, sort_order, is_active) VALUES (?1, ?2, 1)",
+    params![n, so],
+  ).map_err(|e| e.to_string())?;
+
+  // legacy column (ignore if not exists)
+  let _ = conn.execute(
+    "UPDATE sizes SET order_no = COALESCE(order_no, ?2) WHERE name = ?1",
+    params![n, so],
+  );
+
+  Ok(1)
+}
+
+pub fn create_size(name: String, sort_order: Option<i64>) -> Result<i64, String> {
+  add_size(name, sort_order)
+}
+
+
+#[derive(serde::Serialize)]
+pub struct SizeRow {
+  pub id: i64,
+  pub name: String,
+  pub sort_order: i64,
+  pub is_active: i64,
+  pub created_at: Option<String>,
+}
+
+pub fn list_sizes_full(include_inactive: bool) -> Result<Vec<SizeRow>, String> {
+  let conn = get_conn()?;
+  let include = if include_inactive { 1 } else { 0 };
+
+  let mut st = conn
+    .prepare(
+      r#"
+      SELECT id, name,
+        COALESCE(sort_order, 0) AS sort_order,
+        COALESCE(is_active,1) AS is_active,
+        created_at
+      FROM sizes
+      WHERE (?1 = 1) OR COALESCE(is_active,1)=1
+      ORDER BY COALESCE(sort_order, 0) ASC, name ASC
+      "#,
+    )
+    .map_err(|e| e.to_string())?;
+
+  let rows = st
+    .query_map(params![include], |r| {
+      Ok(SizeRow {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        sort_order: r.get(2)?,
+        is_active: r.get(3)?,
+        created_at: r.get(4)?,
+      })
+    })
+    .map_err(|e| e.to_string())?;
+
+  let mut out = Vec::new();
+  for x in rows {
+    out.push(x.map_err(|e| e.to_string())?);
+  }
+  Ok(out)
+}
+
+
+pub fn update_size(
+  id: i64,
+  name: Option<String>,
+  sort_order: Option<i64>,
+  is_active: Option<i64>,
+) -> Result<i64, String> {
+  if id <= 0 {
+    return Err("id geçersiz".to_string());
+  }
+
+  let conn = get_conn()?;
+
+  let exists: Option<i64> = conn
+    .query_row("SELECT id FROM sizes WHERE id=?1", params![id], |r| r.get(0))
+    .optional()
+    .map_err(|e| e.to_string())?;
+
+  if exists.is_none() {
+    return Err("Beden bulunamadı".to_string());
+  }
+
+  let mut changed: i64 = 0;
+
+  if let Some(n) = name {
+    let t = n.trim();
+    if t.is_empty() {
+      return Err("Beden adı boş olamaz".to_string());
+    }
+
+    let c = conn
+      .execute("UPDATE sizes SET name=?2 WHERE id=?1", params![id, t])
+      .map_err(|e| e.to_string())?;
+    changed += c as i64;
+  }
+
+  if let Some(so) = sort_order {
+    let c = conn
+      .execute("UPDATE sizes SET sort_order=?2 WHERE id=?1", params![id, so])
+      .map_err(|e| e.to_string())?;
+    changed += c as i64;
+
+    // legacy column support (ignore if not exists)
+    let _ = conn.execute(
+      "UPDATE sizes SET order_no = COALESCE(order_no, ?2) WHERE id=?1",
+      params![id, so],
+    );
+  }
+
+  if let Some(a) = is_active {
+    let v = if a == 0 { 0 } else { 1 };
+
+    if v == 0 {
+      let size_name: String = conn
+        .query_row("SELECT name FROM sizes WHERE id=?1", params![id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+      let used = count_products_using_size(&conn, id, &size_name);
+      if used > 0 {
+        return Err("Bu beden ürünlerde kullanılıyor; pasife alınamaz".to_string());
+      }
+    }
+
+    let c = conn
+      .execute("UPDATE sizes SET is_active=?2 WHERE id=?1", params![id, v])
+      .map_err(|e| e.to_string())?;
+    changed += c as i64;
+  }
+
+  Ok(changed)
+}
+
+
+pub fn delete_size(id: i64) -> Result<i64, String> {
+  if id <= 0 {
+    return Err("id geçersiz".to_string());
+  }
+
+  let mut conn = get_conn()?;
+  let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+  let size_name: Option<String> = tx
+    .query_row("SELECT name FROM sizes WHERE id=?1", params![id], |r| r.get(0))
+    .optional()
+    .map_err(|e| e.to_string())?;
+
+  let size_name = size_name.ok_or_else(|| "Beden bulunamadı".to_string())?;
+
+  let used = count_products_using_size(&tx, id, &size_name);
+
+  if used > 0 {
+    return Err("Bu beden ürünlerde kullanılıyor; silinemez / pasife alınamaz".to_string());
+  }
+
+  let c = tx
+    .execute("DELETE FROM sizes WHERE id=?1", params![id])
+    .map_err(|e| e.to_string())?;
+
+  tx.commit().map_err(|e| e.to_string())?;
+  Ok(c as i64)
 }
 
 pub fn get_dashboard_summary(days: i64, months: i64) -> Result<DashboardSummary, String> {
@@ -936,8 +1658,16 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         magaza_stok       INTEGER DEFAULT 0,
         depo_stok         INTEGER DEFAULT 0,
 
+        is_active         INTEGER DEFAULT 1,
         created_at        TEXT DEFAULT (datetime('now','localtime')),
-        updated_at        TEXT DEFAULT (datetime('now','localtime'))
+        updated_at        TEXT DEFAULT (datetime('now','localtime')),
+
+        category_id INTEGER,
+        color_id    INTEGER,
+        size_id     INTEGER,
+        FOREIGN KEY(category_id) REFERENCES categories(id) ON DELETE RESTRICT,
+        FOREIGN KEY(color_id)    REFERENCES colors(id)     ON DELETE RESTRICT,
+        FOREIGN KEY(size_id)     REFERENCES sizes(id)      ON DELETE RESTRICT
       );
 
       CREATE TABLE IF NOT EXISTS sales (
@@ -1030,23 +1760,41 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         created_at      TEXT DEFAULT (datetime('now','localtime')),
         FOREIGN KEY(product_barcode) REFERENCES products(barcode) ON DELETE RESTRICT
       );
+      CREATE TABLE IF NOT EXISTS options (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind       TEXT NOT NULL,           -- 'CATEGORY' | 'COLOR' | 'SIZE'
+        value      TEXT NOT NULL,
+        sort       INTEGER DEFAULT 0,
+        is_active  INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        UNIQUE(kind, value)
+      );
 
       CREATE TABLE IF NOT EXISTS _meta (
         key TEXT PRIMARY KEY,
         value TEXT
       );
+      CREATE TABLE IF NOT EXISTS categories (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT NOT NULL UNIQUE,
+        is_active  INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now','localtime'))
+      );
 
-      CREATE TRIGGER IF NOT EXISTS trg_returns_delete_return_items
-      AFTER DELETE ON returns
-      BEGIN
-        DELETE FROM return_items WHERE return_group_id = OLD.return_group_id;
-      END;
+      CREATE TABLE IF NOT EXISTS colors (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT NOT NULL UNIQUE,
+        is_active  INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now','localtime'))
+      );
 
-      CREATE TRIGGER IF NOT EXISTS trg_returns_delete_exchange_items
-      AFTER DELETE ON returns
-      BEGIN
-        DELETE FROM exchange_items WHERE exchange_group_id = OLD.return_group_id;
-      END;
+      CREATE TABLE IF NOT EXISTS sizes (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT NOT NULL UNIQUE,
+        sort_order INTEGER DEFAULT 0,
+        is_active  INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now','localtime'))
+      );
       "#,
     )
     .map_err(|e| e.to_string())?;
@@ -1061,6 +1809,9 @@ fn migrate(conn: &Connection) -> Result<(), String> {
   ensure_column(conn, "products", "created_at", "TEXT DEFAULT (datetime('now','localtime'))")?;
   ensure_column(conn, "products", "updated_at", "TEXT DEFAULT (datetime('now','localtime'))")?;
   ensure_column(conn, "products", "is_active", "INTEGER DEFAULT 1")?;
+  ensure_column(conn, "products", "category_id", "INTEGER")?;
+  ensure_column(conn, "products", "color_id", "INTEGER")?;
+  ensure_column(conn, "products", "size_id", "INTEGER")?;
 
   ensure_column(conn, "sales", "product_barcode", "TEXT")?;
   ensure_column(conn, "sales", "qty", "INTEGER DEFAULT 0")?;
@@ -1083,6 +1834,13 @@ fn migrate(conn: &Connection) -> Result<(), String> {
 
   ensure_column(conn, "expenses", "period", "TEXT")?;
   ensure_column(conn, "returns", "diff_payment_method", "TEXT")?;
+  // dictionary tables (soft delete)
+  ensure_column(conn, "categories", "is_active", "INTEGER DEFAULT 1")?;
+  ensure_column(conn, "colors", "is_active", "INTEGER DEFAULT 1")?;
+  ensure_column(conn, "sizes", "is_active", "INTEGER DEFAULT 1")?;
+
+  // sizes: legacy order_no -> new sort_order (both can live)
+  ensure_column(conn, "sizes", "sort_order", "INTEGER DEFAULT 0")?;
 
   ensure_returns_cascade_triggers(conn)?;
 
@@ -1122,6 +1880,107 @@ fn gen_group_id(prefix: &str) -> String {
   use std::time::{SystemTime, UNIX_EPOCH};
   let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
   format!("{}{}", prefix, ms)
+}
+fn seed_option_tables(conn: &Connection) -> Result<(), String> {
+  // Bu fonksiyon sadece ilk migration/kurulum için: sözlük tabloları zaten doluysa
+  // eski options/products değerleri yeni sözlüklere tekrar tekrar basılmasın.
+  let cat_count: i64 = conn
+    .query_row("SELECT COALESCE(COUNT(*),0) FROM categories", [], |r| r.get(0))
+    .unwrap_or(0);
+  let color_count: i64 = conn
+    .query_row("SELECT COALESCE(COUNT(*),0) FROM colors", [], |r| r.get(0))
+    .unwrap_or(0);
+  let size_count: i64 = conn
+    .query_row("SELECT COALESCE(COUNT(*),0) FROM sizes", [], |r| r.get(0))
+    .unwrap_or(0);
+
+  // Eğer en az bir sözlük tablosu doluysa, legacy seed'i tamamen atla.
+  if cat_count > 0 || color_count > 0 || size_count > 0 {
+    return Ok(());
+  }
+
+  // options -> categories
+  conn.execute(
+    r#"
+    INSERT OR IGNORE INTO categories(name, is_active)
+    SELECT value, 1 FROM options
+    WHERE COALESCE(is_active,1)=1 AND UPPER(kind)='CATEGORY'
+    "#,
+    [],
+  ).map_err(|e| e.to_string())?;
+
+  // options -> colors
+  conn.execute(
+    r#"
+    INSERT OR IGNORE INTO colors(name, is_active)
+    SELECT value, 1 FROM options
+    WHERE COALESCE(is_active,1)=1 AND UPPER(kind)='COLOR'
+    "#,
+    [],
+  ).map_err(|e| e.to_string())?;
+
+  // options -> sizes (sort_order: options.sort)
+  conn.execute(
+    r#"
+    INSERT OR IGNORE INTO sizes(name, sort_order, is_active)
+    SELECT value, COALESCE(sort,0), 1 FROM options
+    WHERE COALESCE(is_active,1)=1 AND UPPER(kind)='SIZE'
+    "#,
+    [],
+  ).map_err(|e| e.to_string())?;
+  conn.execute(r#"
+  INSERT OR IGNORE INTO categories(name, is_active)
+  SELECT DISTINCT TRIM(category), 1
+  FROM products
+  WHERE category IS NOT NULL AND TRIM(category) <> ''
+  "#, []).map_err(|e| e.to_string())?;
+
+  conn.execute(r#"
+  INSERT OR IGNORE INTO colors(name, is_active)
+  SELECT DISTINCT TRIM(color), 1
+  FROM products
+  WHERE color IS NOT NULL AND TRIM(color) <> ''
+  "#, []).map_err(|e| e.to_string())?;
+
+  conn.execute(r#"
+  INSERT OR IGNORE INTO sizes(name, sort_order, is_active)
+  SELECT DISTINCT TRIM(size), 0, 1
+  FROM products
+  WHERE size IS NOT NULL AND TRIM(size) <> ''
+  "#, []).map_err(|e| e.to_string())?;
+
+  conn.execute(r#"
+  UPDATE products
+  SET category_id = (SELECT id FROM categories WHERE name = TRIM(products.category))
+  WHERE (category_id IS NULL OR category_id = 0)
+    AND category IS NOT NULL AND TRIM(category) <> ''
+  "#, []).map_err(|e| e.to_string())?;
+
+  conn.execute(r#"
+  UPDATE products
+  SET color_id = (SELECT id FROM colors WHERE name = TRIM(products.color))
+  WHERE (color_id IS NULL OR color_id = 0)
+    AND color IS NOT NULL AND TRIM(color) <> ''
+  "#, []).map_err(|e| e.to_string())?;
+
+  conn.execute(r#"
+  UPDATE products
+  SET size_id = (SELECT id FROM sizes WHERE name = TRIM(products.size))
+  WHERE (size_id IS NULL OR size_id = 0)
+    AND size IS NOT NULL AND TRIM(size) <> ''
+  "#, []).map_err(|e| e.to_string())?;
+
+  // backfill legacy order_no if column exists (ignore errors)
+  let _ = conn.execute(
+    r#"
+    UPDATE sizes
+    SET order_no = COALESCE(order_no, sort_order)
+    WHERE order_no IS NULL
+    "#,
+    [],
+  );
+
+  Ok(())
 }
 
 #[derive(serde::Deserialize)]
@@ -1175,6 +2034,8 @@ pub struct SaleLineRow {
   pub sold_at: String,
   pub sold_from: String,
   pub payment_method: String,
+  pub refunded_qty: i64,
+  pub refund_kind: Option<String>,
 }
 #[derive(serde::Serialize)]
 pub struct CashReportRow {
@@ -1390,77 +2251,112 @@ pub fn get_cash_report(days: i64) -> Result<Vec<CashReportRow>, String> {
 
   Ok(map.into_values().collect())
 }
-
+/*
 fn like(s: &str) -> String {
   format!("%{}%", s.trim())
-}
-pub fn list_sale_groups(days: i64, _q: Option<String>) -> Result<Vec<SaleGroupRow>, String> {
+}*/
+pub fn list_sale_groups(days: i64, q: Option<String>) -> Result<Vec<SaleGroupRow>, String> {
   let conn = get_conn()?;
   let days = days.clamp(1, 365);
 
+  let q_like: Option<String> = q
+    .and_then(|s| {
+      let t = s.trim().to_string();
+      if t.is_empty() { None } else { Some(t) }
+    })
+    .map(|t| format!("%{}%", t));
+
   let mut out: Vec<SaleGroupRow> = Vec::new();
 
-  // NORMAL SATIŞ FİŞLERİ 
-  let mut stmt_sales = conn.prepare(
-    r#"
-    SELECT
-      s.sale_group_id,
-      MAX(s.sold_at) as sold_at,
-      SUM(s.qty) as qty,
-      SUM(s.total) as total,
-      MAX(COALESCE(s.payment_method,'CARD')) as payment_method
-    FROM sales s
-    WHERE COALESCE(s.voided,0)=0
-      AND s.sale_group_id IS NOT NULL
-      AND s.sold_at >= datetime('now','localtime', printf('-%d day', ?1))
-    GROUP BY s.sale_group_id
-    ORDER BY MAX(s.sold_at) DESC
-    "#
-  ).map_err(|e| e.to_string())?;
+  // NORMAL SATIŞ FİŞLERİ
+  let mut stmt_sales = conn
+    .prepare(
+      r#"
+      SELECT
+        s.sale_group_id,
+        MAX(s.sold_at) as sold_at,
+        SUM(s.qty) as qty,
+        SUM(s.total) as total,
+        MAX(COALESCE(s.payment_method,'CARD')) as payment_method
+      FROM sales s
+      WHERE COALESCE(s.voided,0)=0
+        AND s.sale_group_id IS NOT NULL
+        AND s.sold_at >= datetime('now','localtime', printf('-%d day', ?1))
+        AND (?2 IS NULL OR EXISTS (
+          SELECT 1
+          FROM sales s2
+          LEFT JOIN products p2 ON p2.barcode = s2.product_barcode
+          WHERE s2.sale_group_id = s.sale_group_id
+            AND (
+              TRIM(s2.product_barcode) LIKE TRIM(?2)
+              OR COALESCE(p2.name,'') LIKE ?2
+            )
+        ))
+      GROUP BY s.sale_group_id
+      ORDER BY MAX(s.sold_at) DESC
+      "#,
+    )
+    .map_err(|e| e.to_string())?;
 
-  let rows = stmt_sales.query_map(rusqlite::params![days], |r| {
-    Ok(SaleGroupRow {
-      sale_group_id: r.get(0)?,
-      sold_at: r.get(1)?,
-      qty: r.get(2)?,
-      total: r.get(3)?,
-      payment_method: r.get(4)?,
-      kind: "SALE".to_string(),
+  let rows = stmt_sales
+    .query_map(rusqlite::params![days, q_like], |r| {
+      Ok(SaleGroupRow {
+        sale_group_id: r.get(0)?,
+        sold_at: r.get(1)?,
+        qty: r.get(2)?,
+        total: r.get(3)?,
+        payment_method: r.get(4)?,
+        kind: "SALE".to_string(),
+      })
     })
-  }).map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?;
 
   for r in rows {
     out.push(r.map_err(|e| e.to_string())?);
   }
 
-  // DEĞİŞİM FİŞLERİ 
-  let mut stmt_exchange = conn.prepare(
-    r#"
-    SELECT
-      r.return_group_id,
-      r.created_at,
-      SUM(ei.qty) as qty,
-      SUM(ei.total) as total,
-      COALESCE(r.diff_payment_method,'CARD') as payment_method
-    FROM returns r
-    JOIN exchange_items ei ON ei.exchange_group_id = r.return_group_id
-    WHERE r.mode='EXCHANGE'
-      AND r.created_at >= datetime('now','localtime', printf('-%d day', ?1))
-    GROUP BY r.return_group_id
-    ORDER BY r.created_at DESC
-    "#
-  ).map_err(|e| e.to_string())?;
+  // DEĞİŞİM FİŞLERİ
+  let mut stmt_exchange = conn
+    .prepare(
+      r#"
+      SELECT
+        r.return_group_id,
+        r.created_at,
+        SUM(ei.qty) as qty,
+        SUM(ei.total) as total,
+        COALESCE(r.diff_payment_method,'CARD') as payment_method
+      FROM returns r
+      JOIN exchange_items ei ON ei.exchange_group_id = r.return_group_id
+      WHERE r.mode='EXCHANGE'
+        AND r.created_at >= datetime('now','localtime', printf('-%d day', ?1))
+        AND (?2 IS NULL OR EXISTS (
+          SELECT 1
+          FROM exchange_items ei2
+          LEFT JOIN products p2 ON p2.barcode = ei2.product_barcode
+          WHERE ei2.exchange_group_id = r.return_group_id
+            AND (
+              TRIM(ei2.product_barcode) LIKE TRIM(?2)
+              OR COALESCE(p2.name,'') LIKE ?2
+            )
+        ))
+      GROUP BY r.return_group_id
+      ORDER BY r.created_at DESC
+      "#,
+    )
+    .map_err(|e| e.to_string())?;
 
-  let rows = stmt_exchange.query_map(rusqlite::params![days], |r| {
-    Ok(SaleGroupRow {
-      sale_group_id: r.get(0)?,
-      sold_at: r.get(1)?,
-      qty: r.get(2)?,
-      total: r.get(3)?,
-      payment_method: r.get(4)?,
-      kind: "EXCHANGE".to_string(),
+  let rows = stmt_exchange
+    .query_map(rusqlite::params![days, q_like], |r| {
+      Ok(SaleGroupRow {
+        sale_group_id: r.get(0)?,
+        sold_at: r.get(1)?,
+        qty: r.get(2)?,
+        total: r.get(3)?,
+        payment_method: r.get(4)?,
+        kind: "EXCHANGE".to_string(),
+      })
     })
-  }).map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?;
 
   for r in rows {
     out.push(r.map_err(|e| e.to_string())?);
@@ -1491,7 +2387,22 @@ pub fn list_sales_by_group(sale_group_id: &str) -> Result<Vec<SaleLineRow>, Stri
           s.total,
           s.sold_at,
           COALESCE(s.sold_from,'MAGAZA') AS sold_from,
-          COALESCE(s.payment_method,'CARD') AS payment_method
+          COALESCE(s.payment_method,'CARD') AS payment_method,
+          (
+            SELECT COALESCE(SUM(ri.qty), 0)
+            FROM return_items ri
+            WHERE ri.ref_sale_id = s.id
+          ) AS refunded_qty
+           ,(
+            SELECT
+              CASE
+                WHEN MAX(CASE WHEN COALESCE(ri.return_group_id,'') LIKE 'E%' THEN 1 ELSE 0 END) = 1 THEN 'EXCHANGE'
+                WHEN COALESCE(SUM(ri.qty),0) > 0 THEN 'REFUND'
+                ELSE NULL
+              END
+            FROM return_items ri
+            WHERE ri.ref_sale_id = s.id
+          ) AS refund_kind
         FROM sales s
         LEFT JOIN products p ON p.barcode = s.product_barcode
         WHERE s.sale_group_id = ?1
@@ -1516,6 +2427,8 @@ pub fn list_sales_by_group(sale_group_id: &str) -> Result<Vec<SaleLineRow>, Stri
           sold_at: r.get(9)?,
           sold_from: r.get(10)?,
           payment_method: r.get(11)?,
+          refunded_qty: r.get::<_, Option<i64>>(12)?.unwrap_or(0),
+          refund_kind: r.get::<_, Option<String>>(13)?,
         })
       })
       .map_err(|e| e.to_string())?;
@@ -1569,6 +2482,8 @@ pub fn list_sales_by_group(sale_group_id: &str) -> Result<Vec<SaleLineRow>, Stri
           sold_at: r.get(9)?,
           sold_from: r.get(10)?,
           payment_method: r.get(11)?,
+          refunded_qty: 0,
+          refund_kind: Some("EXCHANGE".to_string()),
         })
       })
       .map_err(|e| e.to_string())?;
@@ -1600,7 +2515,8 @@ pub fn create_sale(payload: CreateSalePayload) -> Result<CreateSaleResult, Strin
   let pm = match pm_up.as_str() {
     "CARD" | "KART" => "CARD",
     "CASH" | "NAKIT" | "NAKİT" => "CASH",
-    _ => return Err("payment_method sadece CARD/KART veya CASH/NAKİT olabilir".to_string()),
+    "TRANSFER" | "HAVALE" | "EFT" => "TRANSFER",
+    _ => "CARD",
   };
 
   use std::collections::HashMap;
@@ -1903,6 +2819,8 @@ pub fn delete_expense(id: i64) -> Result<i64, String> {
     .map_err(|e| e.to_string())?;
   Ok(changed as i64)
 }
+
+
 // -------------------- DASHBOARD --------------------
 
 #[derive(serde::Serialize)]
@@ -1979,7 +2897,7 @@ pub fn list_sales_by_barcode(barcode: &str, days: i64) -> Result<Vec<SaleLine>, 
         unit_price: row.get(2)?,
         total: row.get(3)?,
         sold_from: row.get(4)?,
-        refunded_qty: Some(row.get::<_, i64>(5)?),
+        refunded_qty: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
       })
     })
     .map_err(|e| e.to_string())?;
@@ -2010,12 +2928,35 @@ pub fn create_return(payload: CreateReturnPayload) -> Result<CreateReturnResult,
       .map_err(|e| e.to_string())?,
     None => None,
   };
+  // Kısmi iade: referans satıştan kalan adet kontrolü
   if let Some(ref_id) = ref_sale_id {
-    tx.execute(
-      "UPDATE sales SET voided = 1 WHERE id = ?1 AND COALESCE(voided,0)=0",
-      params![ref_id],
-    )
-    .map_err(|e| e.to_string())?;
+    let sold_qty: i64 = tx
+      .query_row(
+        "SELECT qty FROM sales WHERE id = ?1 AND COALESCE(voided,0)=0",
+        params![ref_id],
+        |r| r.get(0),
+      )
+      .map_err(|e| e.to_string())?;
+
+    let already_refunded: i64 = tx
+      .query_row(
+        "SELECT COALESCE(SUM(qty),0) FROM return_items WHERE ref_sale_id = ?1",
+        params![ref_id],
+        |r| r.get(0),
+      )
+      .map_err(|e| e.to_string())?;
+
+    let remaining = sold_qty - already_refunded;
+
+    if remaining <= 0 {
+      return Err("Bu satış satırı daha önce tamamen iade edilmiş".to_string());
+    }
+    if payload.qty > remaining {
+      return Err(format!(
+        "İade adedi satıştan fazla olamaz (satılan: {}, daha önce iade: {}, kalan: {})",
+        sold_qty, already_refunded, remaining
+      ));
+    }
   }
 
   let col = col_for_loc(&payload.return_to);
@@ -2120,13 +3061,35 @@ pub fn create_exchange(payload: CreateExchangePayload) -> Result<CreateExchangeR
       .map_err(|e| e.to_string())?,
     None => None,
   };
-
+  // Kısmi değişim: referans satıştan kalan adet kontrolü
   if let Some(ref_id) = ref_sale_id {
-    tx.execute(
-      "UPDATE sales SET voided = 1 WHERE id = ?1 AND COALESCE(voided,0)=0",
-      params![ref_id],
-    )
-    .map_err(|e| e.to_string())?;
+    let sold_qty: i64 = tx
+      .query_row(
+        "SELECT qty FROM sales WHERE id = ?1 AND COALESCE(voided,0)=0",
+        params![ref_id],
+        |r| r.get(0),
+      )
+      .map_err(|e| e.to_string())?;
+
+    let already_refunded: i64 = tx
+      .query_row(
+        "SELECT COALESCE(SUM(qty),0) FROM return_items WHERE ref_sale_id = ?1",
+        params![ref_id],
+        |r| r.get(0),
+      )
+      .map_err(|e| e.to_string())?;
+
+    let remaining = sold_qty - already_refunded;
+
+    if remaining <= 0 {
+      return Err("Bu satış satırı daha önce tamamen iade/değişim yapılmış".to_string());
+    }
+    if payload.returned.qty > remaining {
+      return Err(format!(
+        "İade edilen adet satıştan fazla olamaz (satılan: {}, daha önce iade: {}, kalan: {})",
+        sold_qty, already_refunded, remaining
+      ));
+    }
   }
 
   let exchange_group_id = format!("E{}", chrono_like_id());
@@ -2274,6 +3237,11 @@ pub fn create_transfer(payload: CreateTransferPayload) -> Result<CreateTransferR
 
   let transfer_group_id = format!("T{}", chrono_like_id());
 
+  let note_norm: Option<String> = payload.note.as_ref().and_then(|s| {
+    let t = s.trim();
+    if t.is_empty() { None } else { Some(t.to_string()) }
+  });
+
   use std::collections::HashMap;
   let mut need: HashMap<(String, String), i64> = HashMap::new(); 
   for it in &payload.items {
@@ -2312,15 +3280,43 @@ pub fn create_transfer(payload: CreateTransferPayload) -> Result<CreateTransferR
     let from_col = col_for_loc(&it.from_loc);
     let to_col = col_for_loc(&it.to_loc);
 
+    // 1) Kaynaktan düş
     tx.execute(
-      &format!("UPDATE products SET {} = COALESCE({},0) - ?1 WHERE barcode = ?2", from_col, from_col),
+      &format!(
+        "UPDATE products SET {c} = COALESCE({c},0) - ?1 WHERE barcode = ?2",
+        c = from_col
+      ),
       params![qty, &it.barcode],
     )
     .map_err(|e| e.to_string())?;
 
+    // 2) Hedefe ekle
     tx.execute(
-      &format!("UPDATE products SET {} = COALESCE({},0) + ?1 WHERE barcode = ?2", to_col, to_col),
+      &format!(
+        "UPDATE products SET {c} = COALESCE({c},0) + ?1 WHERE barcode = ?2",
+        c = to_col
+      ),
       params![qty, &it.barcode],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // kayıt ekle (undo + rapor için)
+    tx.execute(
+      r#"
+      INSERT INTO transfers (
+        product_barcode, qty, from_loc, to_loc, transfer_group_id, note, transferred_at, voided
+      ) VALUES (
+        ?1, ?2, ?3, ?4, ?5, ?6, datetime('now','localtime'), 0
+      )
+      "#,
+      params![
+        &it.barcode,
+        qty,
+        it.from_loc.trim().to_uppercase(),
+        it.to_loc.trim().to_uppercase(),
+        &transfer_group_id,
+        note_norm,
+      ],
     )
     .map_err(|e| e.to_string())?;
 
@@ -2410,22 +3406,95 @@ pub fn undo_last_transfer() -> Result<UndoLastTransferResult, String> {
   })
 }
 fn ensure_returns_cascade_triggers(conn: &Connection) -> Result<(), String> {
-  conn
-    .execute_batch(
-      r#"
-      CREATE TRIGGER IF NOT EXISTS trg_returns_delete_return_items
+  conn.execute_batch(
+    r#"
+      -- drop possible legacy/duplicate names first
+      DROP TRIGGER IF EXISTS trg_returns_delete_return_items;
+      DROP TRIGGER IF EXISTS trg_returns_delete_exchange_items;
+      DROP TRIGGER IF EXISTS returns_delete_return_items;
+      DROP TRIGGER IF EXISTS returns_delete_exchange_items;
+
+      CREATE TRIGGER trg_returns_delete_return_items
       AFTER DELETE ON returns
       BEGIN
         DELETE FROM return_items WHERE return_group_id = OLD.return_group_id;
       END;
 
-      CREATE TRIGGER IF NOT EXISTS trg_returns_delete_exchange_items
+      CREATE TRIGGER trg_returns_delete_exchange_items
       AFTER DELETE ON returns
       BEGIN
         DELETE FROM exchange_items WHERE exchange_group_id = OLD.return_group_id;
       END;
-      "#,
-    )
-    .map_err(|e| e.to_string())?;
+    "#
+  ).map_err(|e| e.to_string())?;
+  Ok(())
+}
+
+fn seed_default_dictionaries(conn: &Connection) -> Result<(), String> {
+  // Eğer tablolar boşsa (veya çok az kayıt varsa) default değerleri bas.
+  // NOT: INSERT OR IGNORE + UNIQUE(name) sayesinde tekrar tekrar çalışsa da sorun olmaz.
+
+  let cat_count: i64 = conn
+    .query_row("SELECT COALESCE(COUNT(*),0) FROM categories", [], |r| r.get(0))
+    .unwrap_or(0);
+  let color_count: i64 = conn
+    .query_row("SELECT COALESCE(COUNT(*),0) FROM colors", [], |r| r.get(0))
+    .unwrap_or(0);
+  let size_count: i64 = conn
+    .query_row("SELECT COALESCE(COUNT(*),0) FROM sizes", [], |r| r.get(0))
+    .unwrap_or(0);
+
+  // kategori / ürün çeşidi
+  if cat_count == 0 {
+    let categories = vec![
+      "ELBISE", "ÜST", "ALT", "DIŞ GİYİM", "TAKIM", "AKSESUAR",
+    ];
+
+    for name in categories {
+      conn
+        .execute(
+          "INSERT OR IGNORE INTO categories (name, is_active, created_at) VALUES (?1, 1, datetime('now','localtime'))",
+          params![name],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+  }
+
+  // renk
+  if color_count == 0 {
+    let colors = vec![
+      "SIYAH", "BEYAZ", "KREM", "BEJ", "GRI", "LACIVERT",
+      "KAHVERENGI", "BORDO", "YESIL", "MAVI", "PEMBE", "KIRMIZI",
+      "MOR", "TURUNCU", "SARI",
+    ];
+
+    for name in colors {
+      conn
+        .execute(
+          "INSERT OR IGNORE INTO colors (name, is_active, created_at) VALUES (?1, 1, datetime('now','localtime'))",
+          params![name],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+  }
+
+  // beden (sort_order sıralama için)
+  if size_count == 0 {
+    let sizes: Vec<(&str, i64)> = vec![
+      ("STD", 1000),("XS", 10), ("S", 20), ("M", 30), ("L", 40), ("XL", 50), ("XXL", 60),
+      ("34", 110), ("36", 120), ("38", 130), ("40", 140), ("42", 150), ("44", 160), ("46", 170),
+      
+    ];
+
+    for (name, so) in sizes {
+      conn
+        .execute(
+          "INSERT OR IGNORE INTO sizes (name, sort_order, is_active, created_at) VALUES (?1, ?2, 1, datetime('now','localtime'))",
+          params![name, so],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+  }
+
   Ok(())
 }

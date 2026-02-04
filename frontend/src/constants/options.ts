@@ -1,10 +1,11 @@
-export const CATEGORY_OPTIONS = ["Üst", "Alt", "Dış Giyim", "Elbise", "Aksesuar"] as const;
+export const CATEGORY_OPTIONS = ["Üst", "Alt", "Dış Giyim", "Elbise","Takım", "Aksesuar"] as const;
 
 export const COLOR_OPTIONS = [
   "Siyah",
   "Beyaz",
   "Lacivert",
   "Gri",
+  "Bordo",
   "Bej",
   "Kahverengi",
   "Haki",
@@ -21,4 +22,4 @@ export const COLOR_OPTIONS = [
   "Camel",
 ] as const;
 
-export const SIZE_OPTIONS = ["XS", "S", "M", "L", "XL", "XXL", "34", "36", "38", "40", "42", "44", "46", "48", "STD"] as const;
+export const SIZE_OPTIONS = ["STD", "XS", "S", "M", "L", "XL", "XXL", "34", "36", "38", "40", "42", "44", "46", "48"] as const;

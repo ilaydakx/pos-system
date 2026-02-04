@@ -156,7 +156,7 @@ export function StockControl() {
   }, [rows, q, fMismatch, fOut, fOnlyStore, fOnlyWarehouse]);
 
   return (
-    <div style={{ padding: 16, fontFamily: "system-ui" }}>
+    <div style={{ padding: 1, fontFamily: "system-ui" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <h2 style={{ margin: 0 }}>Stok Kontrol</h2>
 

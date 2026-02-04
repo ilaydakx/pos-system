@@ -22,6 +22,8 @@ type SaleLineRow = {
   sold_at: string;
   sold_from: string;
   payment_method?: string;
+  refunded_qty?: number;
+  refund_kind?: "RETURN" | "EXCHANGE" | null;
 };
 
 export function SoldProducts() {
@@ -32,6 +34,28 @@ export function SoldProducts() {
   const [groups, setGroups] = useState<SaleGroupRow[]>([]);
   const [openGroup, setOpenGroup] = useState<string>("");
   const [lines, setLines] = useState<Record<string, SaleLineRow[]>>({});
+
+  const refundedOf = (l: SaleLineRow) => Number((l as any).refunded_qty ?? 0);
+  const remainingOf = (l: SaleLineRow) => Math.max(0, Number(l.qty ?? 0) - refundedOf(l));
+
+  const kindOf = (l: SaleLineRow): "EXCHANGE" | "RETURN" | null => {
+    const k = (l as any).refund_kind;
+    if (k === "EXCHANGE") return "EXCHANGE";
+    if (k === "RETURN") return "RETURN";
+    // fallback: if backend doesn't send kind yet
+    return null;
+  };
+
+  const groupRefundKind = (ls: SaleLineRow[]) => {
+    const hasExchange = ls.some((x) => refundedOf(x) > 0 && kindOf(x) === "EXCHANGE");
+    const hasReturn = ls.some((x) => refundedOf(x) > 0 && kindOf(x) === "RETURN");
+    if (hasExchange && !hasReturn) return "EXCHANGE";
+    if (hasReturn && !hasExchange) return "RETURN";
+    if (hasExchange && hasReturn) return "MIXED";
+    // if kind is not available yet, still mark as REFUNDED if qty>0
+    const hasAny = ls.some((x) => refundedOf(x) > 0);
+    return hasAny ? "REFUNDED" : "NONE";
+  };
 
   const fetchLines = async (sale_group_id: string) => {
     try {
@@ -61,7 +85,8 @@ export function SoldProducts() {
 
   // Preload summaries for groups missing qty/total
   const preloadSummaries = async (rows: SaleGroupRow[]) => {
-    const targets = rows.filter((g) => (g.qty ?? 0) === 0 && (g.total ?? 0) === 0);
+    // We need line data for each group to mark returned/exchanged sales in the list.
+    const targets = rows;
     if (targets.length === 0) return;
 
     const chunkSize = 6;
@@ -197,9 +222,43 @@ export function SoldProducts() {
                 const isOpen = openGroup === g.sale_group_id;
                 return (
                   <React.Fragment key={g.sale_group_id}>
-                    <tr>
+                    <tr
+                      style={(() => {
+                        const ls = lines[g.sale_group_id] ?? [];
+                        const k = groupRefundKind(ls);
+                        if (k === "NONE") return undefined;
+                        // light red tint for any refund/exchange
+                        return { background: "#fff1f1" };
+                      })()}
+                    >
                       <td style={td}>{g.sold_at}</td>
-                      <td style={tdStrong}>{g.sale_group_id}</td>
+                      <td style={tdStrong}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span>{g.sale_group_id}</span>
+                          {(() => {
+                            const ls = lines[g.sale_group_id] ?? [];
+                            const k = groupRefundKind(ls);
+                            if (k === "NONE") return null;
+                            const label = k === "EXCHANGE" ? "Değişim" : k === "RETURN" ? "İade" : "İade";
+                            return (
+                              <span
+                                style={{
+                                  display: "inline-block",
+                                  padding: "2px 8px",
+                                  borderRadius: 999,
+                                  background: "#ffe3e3",
+                                  border: "1px solid #ffb3b3",
+                                  fontSize: 12,
+                                  fontWeight: 700,
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {label}
+                              </span>
+                            );
+                          })()}
+                        </div>
+                      </td>
                       <td style={td}>
                         {typeof g.qty === "number" && g.qty > 0
                           ? g.qty
@@ -234,7 +293,7 @@ export function SoldProducts() {
                             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
                               <thead>
                                 <tr>
-                                  {["Barkod", "Ürün", "Adet", "Satıldığı Fiyat", "Birim ₺", "Satış Yeri", "Ödeme"].map((h) => (
+                                  {["Barkod", "Ürün", "Adet", "Durum", "Satıldığı Fiyat", "Birim ₺", "Satış Yeri", "Ödeme"].map((h) => (
                                     <th key={h} style={thSmall}>
                                       {h}
                                     </th>
@@ -245,8 +304,43 @@ export function SoldProducts() {
                                 {(lines[g.sale_group_id] ?? []).map((l) => (
                                   <tr key={l.id}>
                                     <td style={tdSmall}>{l.product_barcode}</td>
-                                    <td style={tdSmallStrong}>{l.name || "-"}</td>
+                                    <td style={tdSmallStrong}>
+                                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                                        <span>{l.name || "-"}</span>
+                                        {refundedOf(l) > 0 && (
+                                          <span style={{ fontSize: 12, opacity: 0.75 }}>
+                                            Kalan: {remainingOf(l)} / {l.qty}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
                                     <td style={tdSmall}>{l.qty}</td>
+                                    <td style={tdSmall}>
+                                      {(() => {
+                                        const r = refundedOf(l);
+                                        if (r <= 0) return "-";
+                                        const fully = remainingOf(l) === 0;
+                                        const k = kindOf(l);
+                                        const label = k === "EXCHANGE" ? "Değişim" : k === "RETURN" ? "İade" : "İade";
+                                        const txt = fully ? `${label.toUpperCase()}` : `${label}: ${r}/${l.qty}`;
+                                        return (
+                                          <span
+                                            style={{
+                                              display: "inline-block",
+                                              padding: "2px 8px",
+                                              borderRadius: 999,
+                                              background: fully ? "#ffe3e3" : "#fff3cd",
+                                              border: fully ? "1px solid #ffb3b3" : "1px solid #ffe08a",
+                                              fontSize: 12,
+                                              fontWeight: 600,
+                                              whiteSpace: "nowrap",
+                                            }}
+                                          >
+                                            {txt}
+                                          </span>
+                                        );
+                                      })()}
+                                    </td>
                                     <td style={tdSmall}>
                                       {(() => {
                                         const list = (l.list_price ?? 0) || 0;
@@ -273,7 +367,7 @@ export function SoldProducts() {
                                 ))}
                                 {(lines[g.sale_group_id]?.length ?? 0) === 0 && (
                                   <tr>
-                                    <td colSpan={7} style={{ padding: 10, opacity: 0.7 }}>
+                                    <td colSpan={8} style={{ padding: 10, opacity: 0.7 }}>
                                       Detay yok.
                                     </td>
                                   </tr>
@@ -335,7 +429,7 @@ const tdSmall: React.CSSProperties = {
 
 const tdSmallStrong: React.CSSProperties = { ...tdSmall, fontWeight: 600 };
 
-function fmtMoney(v: number) {
+function fmtMoney(v: number | null | undefined) {
   return new Intl.NumberFormat("tr-TR", {
     style: "currency",
     currency: "TRY",

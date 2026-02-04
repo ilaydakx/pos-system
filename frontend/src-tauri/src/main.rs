@@ -6,11 +6,56 @@ mod backup;
 use tauri::Manager;
 use tauri_plugin_dialog;
 
+// -------------------- INPUT NORMALIZATION --------------------
+
+fn norm_opt(s: Option<String>) -> Option<String> {
+  s.and_then(|v| {
+    let t = v.trim().to_string();
+    if t.is_empty() { None } else { Some(t) }
+  })
+}
+
+fn norm_req(field: &str, s: String) -> Result<String, String> {
+  let t = s.trim().to_string();
+  if t.is_empty() {
+    Err(format!("{} zorunlu (boş olamaz).", field))
+  } else {
+    Ok(t)
+  }
+}
+
+fn norm_req_len(field: &str, s: String, max_len: usize) -> Result<String, String> {
+  let t = norm_req(field, s)?;
+  if t.chars().count() > max_len {
+    Err(format!("{} çok uzun (max {}).", field, max_len))
+  } else {
+    Ok(t)
+  }
+}
+
+fn norm_opt_q(s: Option<String>) -> Option<String> {
+  // search params: trim, empty => None
+  norm_opt(s)
+}
+
+fn normalize_payment_method(pm: Option<String>) -> String {
+  let t = pm
+    .as_deref()
+    .map(|s| s.trim().to_uppercase())
+    .unwrap_or_default();
+
+  match t.as_str() {
+    "CARD" | "CASH" | "TRANSFER" => t,
+    "" => "CARD".to_string(),
+    _ => "CARD".to_string(),
+  }
+}
+
 // -------------------- PRODUCTS --------------------
 
 #[derive(serde::Deserialize)]
 struct AddProductPayload {
-  barcode: String,
+  barcode: Option<String>,
   product_code: Option<String>,
   category: Option<String>,
   name: String,
@@ -35,35 +80,107 @@ fn list_products() -> Result<Vec<db::Product>, String> {
 
 #[tauri::command]
 fn find_product(barcode: String) -> Result<Option<db::Product>, String> {
-  db::find_product_by_barcode(&barcode)
+  let bc = barcode.trim().to_string();
+  if bc.is_empty() {
+    return Err("barcode zorunlu (boş olamaz).".into());
+  }
+  db::find_product_by_barcode(&bc)
 }
 
 #[tauri::command]
 fn delete_product(barcode: String) -> Result<i64, String> {
-  println!("[delete_product] called with barcode={}", barcode);
-  db::delete_product(&barcode)
+  let bc = barcode.trim().to_string();
+  if bc.is_empty() {
+    return Err("barcode zorunlu (boş olamaz).".into());
+  }
+  println!("[delete_product] called with barcode={}", bc);
+  db::delete_product(&bc)
 }
+#[tauri::command]
+fn add_product(payload: AddProductPayload) -> Result<CreatedProductDto, String> {
+  // name zorunlu
+  let name = norm_req_len("name", payload.name, 200)?;
 
+  // opsiyonel alanlar: trim + empty => None
+  let barcode_opt = norm_opt(payload.barcode);
+  let product_code_opt = norm_opt(payload.product_code);
+  let category_opt = norm_opt(payload.category);
+  let color_opt = norm_opt(payload.color);
+  let size_opt = norm_opt(payload.size);
+
+  if payload.sell_price < 0.0 {
+    return Err("sell_price negatif olamaz.".into());
+  }
+  if let Some(bp) = payload.buy_price {
+    if bp < 0.0 {
+      return Err("buy_price negatif olamaz.".into());
+    }
+  }
+
+  let created = db::add_product(
+    barcode_opt,
+    product_code_opt,
+    category_opt,
+    name,
+    color_opt,
+    size_opt,
+    payload.buy_price,
+    payload.sell_price,
+    payload.stock,
+    payload.magaza_baslangic,
+    payload.depo_baslangic,
+  )?;
+
+  Ok(CreatedProductDto {
+    barcode: created.barcode,
+    product_code: created.product_code,
+  })
+}
+/*
 #[tauri::command]
 fn add_product(payload: AddProductPayload) -> Result<String, String> {
-  let barcode_opt = match payload.barcode.trim() {
-    "" => None,
-    _ => Some(payload.barcode),
-  };
+  // name zorunlu
+  let name = norm_req_len("name", payload.name, 200)?;
+
+  // opsiyonel alanlar: trim + empty => None
+  let barcode_opt = norm_opt(payload.barcode);
+  let product_code_opt = norm_opt(payload.product_code);
+  let category_opt = norm_opt(payload.category);
+  let color_opt = norm_opt(payload.color);
+  let size_opt = norm_opt(payload.size);
+
+  if payload.sell_price < 0.0 {
+    return Err("sell_price negatif olamaz.".into());
+  }
+  if let Some(bp) = payload.buy_price {
+    if bp < 0.0 {
+      return Err("buy_price negatif olamaz.".into());
+    }
+  }
 
   db::add_product(
     barcode_opt,
-    payload.product_code,
-    payload.category,
-    payload.name,
-    payload.color,
-    payload.size,
+    product_code_opt,
+    category_opt,
+    name,
+    color_opt,
+    size_opt,
     payload.buy_price,
     payload.sell_price,
     payload.stock,
     payload.magaza_baslangic,
     payload.depo_baslangic,
   )
+}*/
+
+#[tauri::command]
+fn update_product(payload: db::UpdateProductPayload) -> Result<i64, String> {
+  db::update_product(payload)
+}
+#[derive(serde::Serialize)]
+pub struct CreatedProductDto {
+  pub barcode: String,
+  pub product_code: Option<String>,
 }
 
 // -------------------- SALES --------------------
@@ -75,7 +192,7 @@ struct CreateSaleItemPayload {
   list_price: f64,
   discount_amount: f64,
   unit_price: f64,
-  sold_from: String, 
+  sold_from: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -95,20 +212,18 @@ struct CreateSaleResult {
 #[tauri::command]
 fn create_sale(payload: CreateSalePayload) -> Result<CreateSaleResult, String> {
   db::create_sale(db::CreateSalePayload {
-    sold_from_default: payload.sold_from_default,
-    payment_method: payload
-      .payment_method
-      .unwrap_or_else(|| "CARD".to_string()),
+    sold_from_default: payload.sold_from_default.trim().to_string(),
+    payment_method: normalize_payment_method(payload.payment_method),
     items: payload
       .items
       .into_iter()
       .map(|i| db::CreateSaleItemPayload {
-        barcode: i.barcode,
+        barcode: i.barcode.trim().to_string(),
         qty: i.qty,
         list_price: i.list_price,
         discount_amount: i.discount_amount,
         unit_price: i.unit_price,
-        sold_from: i.sold_from,
+        sold_from: i.sold_from.trim().to_string(),
       })
       .collect(),
   })
@@ -139,8 +254,8 @@ fn undo_last_sale() -> Result<UndoLastSaleResult, String> {
 struct CreateTransferItemPayload {
   barcode: String,
   qty: i64,
-  from_loc: String, 
-  to_loc: String,   
+  from_loc: String,
+  to_loc: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -168,13 +283,13 @@ fn create_transfer(payload: CreateTransferPayload) -> Result<CreateTransferResul
       .items
       .into_iter()
       .map(|it| db::CreateTransferItemPayload {
-        barcode: it.barcode,
+        barcode: it.barcode.trim().to_string(),
         qty: it.qty,
-        from_loc: it.from_loc,
-        to_loc: it.to_loc,
+        from_loc: it.from_loc.trim().to_string(),
+        to_loc: it.to_loc.trim().to_string(),
       })
       .collect(),
-    note: payload.note,
+    note: norm_opt(payload.note),
   })
   .map(|r| CreateTransferResult {
     transfer_group_id: r.transfer_group_id,
@@ -205,12 +320,17 @@ struct SaleLineDto {
   unit_price: f64,
   total: f64,
   sold_from: String,
-  refunded_qty: Option<i64>,
+  refunded_qty: i64,
 }
 
 #[tauri::command]
 fn list_sales_by_barcode(payload: ListSalesByBarcodePayload) -> Result<Vec<SaleLineDto>, String> {
-  db::list_sales_by_barcode(&payload.barcode, payload.days).map(|rows| {
+  let bc = payload.barcode.trim().to_string();
+  if bc.is_empty() {
+    return Err("barcode zorunlu (boş olamaz).".into());
+  }
+
+  db::list_sales_by_barcode(&bc, payload.days).map(|rows| {
     rows
       .into_iter()
       .map(|r| SaleLineDto {
@@ -229,7 +349,7 @@ fn list_sales_by_barcode(payload: ListSalesByBarcodePayload) -> Result<Vec<SaleL
 struct CreateReturnPayload {
   barcode: String,
   qty: i64,
-  return_to: String, 
+  return_to: String,
   sold_at: Option<String>,
   sold_from: Option<String>,
   unit_price: f64,
@@ -245,11 +365,11 @@ struct CreateReturnResult {
 #[tauri::command]
 fn create_return(payload: CreateReturnPayload) -> Result<CreateReturnResult, String> {
   db::create_return(db::CreateReturnPayload {
-    barcode: payload.barcode,
+    barcode: payload.barcode.trim().to_string(),
     qty: payload.qty,
-    return_to: payload.return_to,
-    sold_at: payload.sold_at,
-    sold_from: payload.sold_from,
+    return_to: payload.return_to.trim().to_string(),
+    sold_at: norm_opt(payload.sold_at),
+    sold_from: norm_opt(payload.sold_from),
     unit_price: payload.unit_price,
   })
   .map(|r| CreateReturnResult {
@@ -273,15 +393,12 @@ struct CreateExchangeReturnedPayload {
 struct CreateExchangeGivenItemPayload {
   barcode: String,
   qty: i64,
-  sold_from: String, 
+  sold_from: String,
   unit_price: f64,
 }
 
 #[derive(serde::Deserialize)]
 struct CreateExchangeSummaryPayload {
-  returned_total: f64,
-  given_total: f64,
-  diff: f64,
   diff_payment_method: Option<String>,
 }
 
@@ -305,28 +422,25 @@ struct CreateExchangeResult {
 fn create_exchange(payload: CreateExchangePayload) -> Result<CreateExchangeResult, String> {
   db::create_exchange(db::CreateExchangePayload {
     returned: db::CreateExchangeReturnedPayload {
-      barcode: payload.returned.barcode,
+      barcode: payload.returned.barcode.trim().to_string(),
       qty: payload.returned.qty,
-      return_to: payload.returned.return_to,
-      sold_at: payload.returned.sold_at,
-      sold_from: payload.returned.sold_from,
+      return_to: payload.returned.return_to.trim().to_string(),
+      sold_at: norm_opt(payload.returned.sold_at),
+      sold_from: norm_opt(payload.returned.sold_from),
       unit_price: payload.returned.unit_price,
     },
     given: payload
       .given
       .into_iter()
       .map(|x| db::CreateExchangeGivenItemPayload {
-        barcode: x.barcode,
+        barcode: x.barcode.trim().to_string(),
         qty: x.qty,
-        sold_from: x.sold_from,
+        sold_from: x.sold_from.trim().to_string(),
         unit_price: x.unit_price,
       })
       .collect(),
     summary: db::CreateExchangeSummaryPayload {
-      returned_total: payload.summary.returned_total,
-      given_total: payload.summary.given_total,
-      diff: payload.summary.diff,
-      diff_payment_method: payload.summary.diff_payment_method.clone(), 
+      diff_payment_method: norm_opt(payload.summary.diff_payment_method),
     },
   })
   .map(|r| CreateExchangeResult {
@@ -337,15 +451,16 @@ fn create_exchange(payload: CreateExchangePayload) -> Result<CreateExchangeResul
     diff: r.diff,
   })
 }
+
 // -------------------- EXPENSES --------------------
 
 #[derive(serde::Deserialize)]
 struct AddExpensePayload {
-  spent_at: String,       
-  period: Option<String>, 
+  spent_at: String,
+  period: Option<String>,
   category: Option<String>,
   amount: f64,
-  note: Option<String>, 
+  note: Option<String>,
 }
 
 #[tauri::command]
@@ -356,11 +471,11 @@ fn list_expenses() -> Result<Vec<db::Expense>, String> {
 #[tauri::command]
 fn add_expense(payload: AddExpensePayload) -> Result<i64, String> {
   db::add_expense(
-    payload.spent_at,
-    payload.period,
-    payload.category,
+    payload.spent_at.trim().to_string(),
+    norm_opt(payload.period),
+    norm_opt(payload.category),
     payload.amount,
-    payload.note,
+    norm_opt(payload.note),
   )
 }
 
@@ -373,7 +488,7 @@ fn delete_expense(id: i64) -> Result<i64, String> {
 
 #[tauri::command]
 fn list_sale_groups(days: i64, q: Option<String>) -> Result<Vec<db::SaleGroupRow>, String> {
-  db::list_sale_groups(days, q)
+  db::list_sale_groups(days, norm_opt_q(q))
 }
 
 #[tauri::command]
@@ -391,6 +506,159 @@ fn get_dashboard_summary(days: i64, months: i64) -> Result<db::DashboardSummary,
 #[tauri::command]
 fn get_cash_report(days: i64) -> Result<Vec<db::CashReportRow>, String> {
   db::get_cash_report(days)
+}
+
+// -------------------- DICTIONARIES (Categories / Colors / Sizes) --------------------
+
+#[derive(serde::Serialize)]
+struct DictItemDto {
+  id: i64,
+  name: String,
+  is_active: i64,
+  created_at: Option<String>,
+  sort_order: Option<i64>, // sizes için
+}
+
+#[tauri::command]
+fn list_categories(include_inactive: Option<bool>) -> Result<Vec<DictItemDto>, String> {
+  let inc = include_inactive.unwrap_or(false);
+  db::list_categories_full(inc).map(|rows| {
+    rows
+      .into_iter()
+      .map(|r| DictItemDto {
+        id: r.id,
+        name: r.name,
+        is_active: r.is_active,
+        created_at: r.created_at,
+        sort_order: None,
+      })
+      .collect()
+  })
+}
+
+#[tauri::command]
+fn create_category(name: String) -> Result<i64, String> {
+  let n = norm_req_len("name", name, 100)?;
+  db::create_category(n)
+}
+
+#[tauri::command]
+fn update_category(id: i64, name: Option<String>, is_active: Option<i64>) -> Result<i64, String> {
+  let n = match name {
+    Some(v) => {
+      let t = v.trim().to_string();
+      if t.is_empty() { return Err("name boş olamaz.".into()); }
+      Some(t)
+    }
+    None => None,
+  };
+  db::update_category(id, n, is_active)
+}
+
+#[tauri::command]
+fn delete_category(id: i64) -> Result<i64, String> {
+  db::delete_category(id)
+}
+
+#[tauri::command]
+fn list_colors(include_inactive: Option<bool>) -> Result<Vec<DictItemDto>, String> {
+  let inc = include_inactive.unwrap_or(false);
+  db::list_colors_full(inc).map(|rows| {
+    rows
+      .into_iter()
+      .map(|r| DictItemDto {
+        id: r.id,
+        name: r.name,
+        is_active: r.is_active,
+        created_at: r.created_at,
+        sort_order: None,
+      })
+      .collect()
+  })
+}
+#[tauri::command]
+fn list_categories_full(include_inactive: bool) -> Result<Vec<db::CategoryRow>, String> {
+  db::list_categories_full(include_inactive)
+}
+
+#[tauri::command]
+fn list_colors_full(include_inactive: bool) -> Result<Vec<db::ColorRow>, String> {
+  db::list_colors_full(include_inactive)
+}
+
+#[tauri::command]
+fn list_sizes_full(include_inactive: bool) -> Result<Vec<db::SizeRow>, String> {
+  db::list_sizes_full(include_inactive)
+}
+
+#[tauri::command]
+fn create_color(name: String) -> Result<i64, String> {
+  let n = norm_req_len("name", name, 100)?;
+  db::create_color(n)
+}
+
+#[tauri::command]
+fn update_color(id: i64, name: Option<String>, is_active: Option<i64>) -> Result<i64, String> {
+  let n = match name {
+    Some(v) => {
+      let t = v.trim().to_string();
+      if t.is_empty() { return Err("name boş olamaz.".into()); }
+      Some(t)
+    }
+    None => None,
+  };
+  db::update_color(id, n, is_active)
+}
+
+#[tauri::command]
+fn delete_color(id: i64) -> Result<i64, String> {
+  db::delete_color(id)
+}
+
+#[tauri::command]
+fn list_sizes(include_inactive: Option<bool>) -> Result<Vec<DictItemDto>, String> {
+  let inc = include_inactive.unwrap_or(false);
+  db::list_sizes_full(inc).map(|rows| {
+    rows
+      .into_iter()
+      .map(|r| DictItemDto {
+        id: r.id,
+        name: r.name,
+        is_active: r.is_active,
+        created_at: r.created_at,
+        sort_order: Some(r.sort_order),
+      })
+      .collect()
+  })
+}
+
+#[tauri::command]
+fn create_size(name: String, sort_order: Option<i64>) -> Result<i64, String> {
+  let n = norm_req_len("name", name, 100)?;
+  db::create_size(n, sort_order)
+}
+
+#[tauri::command]
+fn update_size(
+  id: i64,
+  name: Option<String>,
+  sort_order: Option<i64>,
+  is_active: Option<i64>,
+) -> Result<i64, String> {
+  let n = match name {
+    Some(v) => {
+      let t = v.trim().to_string();
+      if t.is_empty() { return Err("name boş olamaz.".into()); }
+      Some(t)
+    }
+    None => None,
+  };
+  db::update_size(id, n, sort_order, is_active)
+}
+
+#[tauri::command]
+fn delete_size(id: i64) -> Result<i64, String> {
+  db::delete_size(id)
 }
 
 // -------------------- BACKUP --------------------
@@ -464,8 +732,11 @@ fn main() {
     // pencere kapanırken otomatik yedek
     .on_window_event(|window, event| {
       if let tauri::WindowEvent::CloseRequested { .. } = event {
-        let app = window.app_handle();
-        let _ = backup::backup_sqlite_db(&app);
+        let app = window.app_handle().clone(); // 👈 kritik: clone
+
+        std::thread::spawn(move || {
+          let _ = backup::backup_sqlite_db(&app);
+        });
       }
     })
     .invoke_handler(tauri::generate_handler![
@@ -473,6 +744,7 @@ fn main() {
       ping_db,
       list_products,
       add_product,
+      update_product,
       delete_product,
       find_product,
 
@@ -501,6 +773,23 @@ fn main() {
       // sold products/groups
       list_sale_groups,
       list_sales_by_group,
+
+      // dictionaries
+      list_categories,
+      create_category,
+      update_category,
+      delete_category,
+      list_colors,
+      create_color,
+      update_color,
+      delete_color,
+      list_sizes,
+      create_size,
+      update_size,
+      delete_size,
+      list_categories_full,
+      list_colors_full,
+      list_sizes_full,
 
       // backup
       backup_now,

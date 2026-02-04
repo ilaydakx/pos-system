@@ -3,8 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { Link } from "react-router-dom";
 import { confirm } from "@tauri-apps/plugin-dialog";
 
-console.log("invoke fn:", invoke);
-
 type Product = {
   barcode: string;
   product_code?: string | null;
@@ -12,13 +10,14 @@ type Product = {
   name: string;
   color?: string | null;
   size?: string | null;
-  buy_price: number;
+  buy_price?: number | null;
   sell_price: number;
 
-  stock: number;
+  stock?: number | null;
 
   magaza_stok?: number | null;
   depo_stok?: number | null;
+  created_at?: string | null;
 };
 
 export function Products() {
@@ -27,6 +26,13 @@ export function Products() {
   const [products, setProducts] = useState<Product[]>([]);
   const [q, setQ] = useState("");
   const [showAll, setShowAll] = useState(false); 
+
+  const getDisplayStock = (p: Product) => {
+    const hasLoc = p.magaza_stok != null || p.depo_stok != null;
+    return hasLoc
+      ? (p.magaza_stok ?? 0) + (p.depo_stok ?? 0)
+      : (p.stock ?? 0);
+  };
 
   const load = async () => {
     try {
@@ -52,11 +58,7 @@ export function Products() {
     return products.filter((p) => {
       // 1) satışta olanlar filtresi
       if (!showAll) {
-        const hasLoc = p.magaza_stok != null || p.depo_stok != null;
-        const totalStock = hasLoc
-          ? (p.magaza_stok ?? 0) + (p.depo_stok ?? 0)
-          : (p.stock ?? 0);
-
+        const totalStock = getDisplayStock(p);
         if (totalStock <= 0) return false;
       }
 
@@ -112,7 +114,7 @@ export function Products() {
     if (!ok) return;
 
     try {
-      const affected = await invoke<number>("delete_product", { barcode });
+      const affected = await invoke<number>("delete_product", { barcode: barcode.trim() });
       console.log("rows affected:", affected);
 
       setProducts(prev => prev.filter(p => p.barcode !== barcode));
@@ -212,7 +214,7 @@ export function Products() {
                   "Alış ₺",
                   "Satış ₺",
                   "Stok",
-                  "Sil",
+                  "İşlemler",
                 ].map((h) => (
                   <th
                     key={h}
@@ -242,20 +244,38 @@ export function Products() {
                   <td style={cell}>{p.size ?? "-"}</td>
                   <td style={cell}>{fmtMoney(p.buy_price)}</td>
                   <td style={cell}>{fmtMoney(p.sell_price)}</td>
-                  <td style={cell}>{p.stock}</td>
+                  <td style={cell}>{getDisplayStock(p)}</td>
 
-                  <td style={cell}>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleDelete(p.barcode);
-                      }}
-                      style={{ cursor: "pointer", background: "white" }}
-                    >
-                      🗑 Sil
-                    </button>
+                  <td style={actionsCell}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <Link
+                        to={`/products/${encodeURIComponent(p.barcode)}/edit`}
+                        style={btnLink}
+                      >
+                        Düzenle
+                      </Link>
+
+                      <Link
+                        to={`/products/new?variantOf=${encodeURIComponent(
+                          (p.product_code ?? p.barcode).trim() || p.barcode
+                        )}&from=${encodeURIComponent(p.barcode)}`}
+                        style={btnLink}
+                      >
+                        ➕ Yeni
+                      </Link>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleDelete(p.barcode);
+                        }}
+                        style={{ cursor: "pointer", background: "white" }}
+                      >
+                        🗑 Sil
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -286,7 +306,26 @@ const cellStrong: React.CSSProperties = {
   fontWeight: 600,
 };
 
-function fmtMoney(v: number) {
+const btnLink: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "6px 8px",
+  borderRadius: 10,
+  border: "1px solid rgba(17,24,39,0.15)",
+  textDecoration: "none",
+  color: "#111827",
+  background: "#fff",
+  fontSize: 12,
+  fontWeight: 600,
+};
+
+const actionsCell: React.CSSProperties = {
+  ...cell,
+  whiteSpace: "nowrap",
+};
+
+function fmtMoney(v: number | null | undefined) {
   return new Intl.NumberFormat("tr-TR", {
     style: "currency",
     currency: "TRY",
