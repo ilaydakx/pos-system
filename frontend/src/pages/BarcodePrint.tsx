@@ -90,16 +90,23 @@ export default function BarcodePrint() {
     const el = document.getElementById("barcode-print-area");
     if (!el) throw new Error("Yazdırma alanı bulunamadı");
 
-    const canvas = await html2canvas(el, {
+    // ✅ html2canvas'i burada import ediyoruz
+    const html2canvasMod = await import("html2canvas");
+    const html2canvas = html2canvasMod.default;
+
+    // ✅ jsPDF import
+    const jspdfMod = await import("jspdf");
+    const jsPDF = jspdfMod.jsPDF;
+
+    // ✅ tek canvas
+    const cnv = await html2canvas(el, {
       scale: 2,
       backgroundColor: "#ffffff",
       useCORS: true,
       logging: false,
     });
-    const { jsPDF } = await import("jspdf");
 
-    const canvas = await html2canvas(el, { scale: 2, backgroundColor: "#ffffff" });
-    const imgData = canvas.toDataURL("image/png");
+    const imgData = cnv.toDataURL("image/png");
 
     const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
 
@@ -107,15 +114,16 @@ export default function BarcodePrint() {
     const pageH = pdf.internal.pageSize.getHeight();
 
     const imgW = pageW;
-    const imgH = (canvas.height * imgW) / canvas.width;
+    const imgH = (cnv.height * imgW) / cnv.width;
 
-    // Çok sayfa desteği (etiketler uzunsa)
+    // Çok sayfa desteği
     let y = 0;
     let remaining = imgH;
 
     while (remaining > 0) {
       pdf.addImage(imgData, "PNG", 0, y, imgW, imgH);
       remaining -= pageH;
+
       if (remaining > 0) {
         pdf.addPage();
         y -= pageH;
