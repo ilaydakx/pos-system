@@ -29,7 +29,12 @@ function yyyyMmDdLocal(d = new Date()) {
 
 function fmtMoney(v: number) {
   if (!Number.isFinite(v)) return "-";
-  return new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" }).format(v);
+  return new Intl.NumberFormat("tr-TR", {
+    style: "currency",
+    currency: "TRY",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(v);
 }
 
 function isCreatedToday(p: Product) {
