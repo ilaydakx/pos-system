@@ -57,7 +57,7 @@ export default function BarcodeLabelSheet({
           displayValue: false,
           margin: 0,
           width: 1.2,
-          height: 18,
+          height: 34, // px: daha stabil
         });
       } catch {
         // barcode invalid olursa sessiz geç
@@ -66,9 +66,7 @@ export default function BarcodeLabelSheet({
   }, [labels]);
 
   const sheetStyle = useMemo((): React.CSSProperties => {
-    return {
-      background: "white",
-    };
+    return { background: "white" };
   }, []);
 
   const gridStyle = useMemo((): React.CSSProperties => {
@@ -84,20 +82,84 @@ export default function BarcodeLabelSheet({
     };
   }, []);
 
+  // ✅ EN ÖNEMLİ: relative + overflow hidden
   const labelBoxStyle = useMemo((): React.CSSProperties => {
     return {
       width: `${ART56.labelW}mm`,
       height: `${ART56.labelH}mm`,
+      position: "relative",
+      overflow: "hidden",
       border: "none",
       borderRadius: 0,
-      padding: "2mm 2mm",
+      padding: 0,
       boxSizing: "border-box",
-      display: "grid",
-      alignContent: "start",
-      gap: 1,
       background: "transparent",
+      WebkitPrintColorAdjust: "exact",
+      printColorAdjust: "exact",
     };
   }, []);
+
+  // ✅ Ürün kodu / fiyat / barkod alanlarını mm ile sabitle
+  const codeStyle: React.CSSProperties = {
+    position: "absolute",
+    top: "1.6mm",
+    left: "2mm",
+    right: "2mm",
+    textAlign: "left",
+    fontSize: 10,
+    fontWeight: 800,
+    opacity: 0.9,
+    whiteSpace: "nowrap",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  };
+
+  const priceStyle: React.CSSProperties = {
+    position: "absolute",
+    top: "1.4mm",
+    right: "2mm",
+    textAlign: "right",
+    fontSize: 12.5,
+    fontWeight: 900,
+    letterSpacing: 0.3,
+    whiteSpace: "nowrap",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  };
+
+  const sizeColorStyle: React.CSSProperties = {
+    position: "absolute",
+    top: "6.0mm",
+    left: "2mm",
+    right: "2mm",
+    fontSize: 9.5,
+    fontWeight: 700,
+    opacity: 0.85,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  };
+
+  const barcodeWrapStyle: React.CSSProperties = {
+    position: "absolute",
+    bottom: "3.6mm", // alttaki barkod numarasına yer bırak
+    left: "2mm",
+    right: "2mm",
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+  };
+
+  const barcodeNumberStyle: React.CSSProperties = {
+    position: "absolute",
+    bottom: "1.2mm",
+    left: 0,
+    right: 0,
+    textAlign: "center",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    fontSize: 9.5,
+    fontWeight: 900,
+    letterSpacing: 1,
+    whiteSpace: "nowrap",
+  };
 
   return (
     <>
@@ -105,22 +167,19 @@ export default function BarcodeLabelSheet({
       <style>
         {`
           @media print {
-            /* sadece etiket sayfası gözüksün */
             body * { visibility: hidden !important; }
             #barcode-print-area, #barcode-print-area * { visibility: visible !important; }
 
-            /* kaymayı azaltmak için browser default marginleri kapat */
             html, body { margin: 0 !important; padding: 0 !important; }
 
             #barcode-print-area {
               position: absolute;
               left: 0;
               top: 0;
-              width: 210mm; /* A4 */
+              width: 210mm;
               background: white !important;
             }
 
-            /* dekoratif border/radius vb. asla ölçü etkilemesin */
             #barcode-print-area .label {
               border: none !important;
               border-radius: 0 !important;
@@ -148,42 +207,33 @@ export default function BarcodeLabelSheet({
 
             return (
               <div key={key} style={labelBoxStyle} className="label">
-                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
-                  <div style={{ fontSize: 10, fontWeight: 800, opacity: 0.85 }}>
-                    {showProductCode ? (code || "—") : ""}
-                  </div>
-                  <div style={{ fontSize: 12.5, fontWeight: 900 ,  letterSpacing: 0.3}}>
-                    {showPrice ? (it.priceText || "") : ""}
-                  </div>
-                </div>
-  
+                {/* Ürün kodu */}
+                {showProductCode ? (
+                  <div style={codeStyle}>{code || "—"}</div>
+                ) : null}
 
-                {sizeColor && (
-                  <div style={{ fontSize: 9.5, fontWeight: 700, opacity: 0.85 }}>{sizeColor}</div>
-                )}
+                {/* Fiyat */}
+                {showPrice ? <div style={priceStyle}>{it.priceText || ""}</div> : null}
 
-                <div style={{ display: "grid", justifyItems: "center", gap: 2, marginTop: "auto" }}>
+                {/* Beden/Renk (istersen kapalı kalır) */}
+                {sizeColor ? <div style={sizeColorStyle}>{sizeColor}</div> : null}
+
+                {/* Barkod */}
+                <div style={barcodeWrapStyle}>
                   <svg
                     ref={(el) => {
                       svgRefs.current[key] = el;
                     }}
-                    style={{ width: "100%", height: 18 }}
+                    style={{ width: "100%", height: "10.5mm" }} // ✅ mm ile stabil
                   />
-                  <div
-                    style={{
-                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                      fontSize: 9.5,
-                      fontWeight: 900,
-                      letterSpacing: 1,
-                    }}
-                  >
-                    {it.barcode}
-                  </div>
                 </div>
+
+                {/* Barkod numarası */}
+                <div style={barcodeNumberStyle}>{it.barcode}</div>
               </div>
             );
           })}
-          
+
           {labels.length === 0 && (
             <div style={{ padding: 12, opacity: 0.7 }}>
               Etiket yok. Soldan ürün seç / bugün eklenenleri seç.
