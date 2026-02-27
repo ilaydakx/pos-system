@@ -90,7 +90,12 @@ export default function BarcodePrint() {
     const el = document.getElementById("barcode-print-area");
     if (!el) throw new Error("Yazdırma alanı bulunamadı");
 
-    const html2canvas = (await import("html2canvas")).default;
+    const canvas = await html2canvas(el, {
+      scale: 2,
+      backgroundColor: "#ffffff",
+      useCORS: true,
+      logging: false,
+    });
     const { jsPDF } = await import("jspdf");
 
     const canvas = await html2canvas(el, { scale: 2, backgroundColor: "#ffffff" });
