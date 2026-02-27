@@ -12,11 +12,19 @@ export type LabelItem = {
 
 const ART56 = {
   cols: 4,
-  gapMm: 0, // 4 * 52.5 = 210mm (A4 width)
+  gapMm: 0,
   labelW: 52.5,
   labelH: 21.2,
   pagePaddingMm: 0,
 } as const;
+
+// A4 ölçüleri (mm)
+const A4_W = 210;
+const A4_H = 297;
+
+// Yazıcı güvenli boşluk (mm) — alt satır boş kalsın diye
+const SAFE_TOP = 10;
+const SAFE_BOTTOM = 10;
 
 export default function BarcodeLabelSheet({
   labels,
@@ -43,9 +51,23 @@ export default function BarcodeLabelSheet({
 
   const keyFor = (it: LabelItem, idx: number) => `${it.barcode}__${idx}`;
 
-  // barcode render
+  // Sayfaya sığan satır/etiket sayısı
+  const rowsPerPage = Math.floor((A4_H - SAFE_TOP - SAFE_BOTTOM) / ART56.labelH);
+  const labelsPerPage = rowsPerPage * ART56.cols;
+
+  // labels -> pages
+  const pages: LabelItem[][] = useMemo(() => {
+    const out: LabelItem[][] = [];
+    for (let i = 0; i < labels.length; i += labelsPerPage) {
+      out.push(labels.slice(i, i + labelsPerPage));
+    }
+    return out;
+  }, [labels, labelsPerPage]);
+
+  // Barcode render (sayfalara bölünmüş key sistemi ile)
   useEffect(() => {
-    for (let i = 0; i < labels.length; i++) {
+    const flatCount = labels.length;
+    for (let i = 0; i < flatCount; i++) {
       const it = labels[i];
       const key = keyFor(it, i);
       const svg = svgRefs.current[key];
@@ -57,24 +79,25 @@ export default function BarcodeLabelSheet({
           displayValue: false,
           margin: 0,
           width: 1.2,
-          height: 34, // px: daha stabil
+          height: 34, // px (etiket içinde stabil)
         });
       } catch {
-        // barcode invalid olursa sessiz geç
+        // sessiz geç
       }
     }
   }, [labels]);
 
-  const sheetStyle = useMemo((): React.CSSProperties => {
-    return { background: "white" };
-  }, []);
+  const sheetStyle = useMemo((): React.CSSProperties => ({ background: "white" }), []);
 
   const gridStyle = useMemo((): React.CSSProperties => {
     return {
       display: "grid",
       gridTemplateColumns: `repeat(${ART56.cols}, ${ART56.labelW}mm)`,
       gap: `${ART56.gapMm}mm`,
-      padding: `${ART56.pagePaddingMm}mm`,
+      paddingTop: `${SAFE_TOP}mm`,
+      paddingBottom: `${SAFE_BOTTOM}mm`,
+      paddingLeft: `${ART56.pagePaddingMm}mm`,
+      paddingRight: `${ART56.pagePaddingMm}mm`,
       justifyContent: "left",
       alignContent: "start",
       background: "white",
@@ -82,7 +105,7 @@ export default function BarcodeLabelSheet({
     };
   }, []);
 
-  // ✅ EN ÖNEMLİ: relative + overflow hidden
+  // Etiket kutusu: absolute layout için şart
   const labelBoxStyle = useMemo((): React.CSSProperties => {
     return {
       width: `${ART56.labelW}mm`,
@@ -99,17 +122,18 @@ export default function BarcodeLabelSheet({
     };
   }, []);
 
-  // ✅ Ürün kodu / fiyat / barkod alanlarını mm ile sabitle
   const codeStyle: React.CSSProperties = {
     position: "absolute",
     top: "1.6mm",
     left: "2mm",
-    right: "2mm",
+    right: "26mm", // fiyat sağda dursun diye yer aç
     textAlign: "left",
     fontSize: 10,
     fontWeight: 800,
     opacity: 0.9,
     whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
   };
 
@@ -140,7 +164,7 @@ export default function BarcodeLabelSheet({
 
   const barcodeWrapStyle: React.CSSProperties = {
     position: "absolute",
-    bottom: "3.6mm", // alttaki barkod numarasına yer bırak
+    bottom: "3.6mm", // barkod numarasına yer bırak
     left: "2mm",
     right: "2mm",
     display: "flex",
@@ -163,10 +187,11 @@ export default function BarcodeLabelSheet({
 
   return (
     <>
-      {/* print styles */}
       <style>
         {`
           @media print {
+            @page { size: A4; margin: 0; }
+
             body * { visibility: hidden !important; }
             #barcode-print-area, #barcode-print-area * { visibility: visible !important; }
 
@@ -191,55 +216,66 @@ export default function BarcodeLabelSheet({
       </style>
 
       <div id="barcode-print-area" style={sheetStyle}>
-        <div style={gridStyle}>
-          {labels.map((it, idx) => {
-            const key = keyFor(it, idx);
-            const code = (it.productCode || "").trim();
-            const size = (it.size || "").trim();
-            const color = (it.color || "").trim();
+        {pages.map((pageLabels, pageIdx) => (
+          <div
+            key={`page:${pageIdx}`}
+            style={{
+              width: `${A4_W}mm`,
+              height: `${A4_H}mm`,
+              background: "white",
+              pageBreakAfter: pageIdx < pages.length - 1 ? "always" : "auto",
+              breakAfter: pageIdx < pages.length - 1 ? "page" : "auto",
+            }}
+          >
+            <div style={gridStyle}>
+              {pageLabels.map((it, idx) => {
+                const globalIdx = pageIdx * labelsPerPage + idx;
+                const key = keyFor(it, globalIdx);
 
-            const sizeColor =
-              showSizeColor && (size || color)
-                ? [size ? `Beden: ${size}` : "", color ? `Renk: ${color}` : ""]
-                    .filter(Boolean)
-                    .join(" • ")
-                : "";
+                const code = (it.productCode || "").trim();
+                const size = (it.size || "").trim();
+                const color = (it.color || "").trim();
 
-            return (
-              <div key={key} style={labelBoxStyle} className="label">
-                {/* Ürün kodu */}
-                {showProductCode ? (
-                  <div style={codeStyle}>{code || "—"}</div>
-                ) : null}
+                const sizeColor =
+                  showSizeColor && (size || color)
+                    ? [size ? `Beden: ${size}` : "", color ? `Renk: ${color}` : ""]
+                        .filter(Boolean)
+                        .join(" • ")
+                    : "";
 
-                {/* Fiyat */}
-                {showPrice ? <div style={priceStyle}>{it.priceText || ""}</div> : null}
+                return (
+                  <div key={key} style={labelBoxStyle} className="label">
+                    {/* Üst satır: Kod + Fiyat */}
+                    {showProductCode ? <div style={codeStyle}>{code || "—"}</div> : null}
+                    {showPrice ? <div style={priceStyle}>{it.priceText || ""}</div> : null}
 
-                {/* Beden/Renk (istersen kapalı kalır) */}
-                {sizeColor ? <div style={sizeColorStyle}>{sizeColor}</div> : null}
+                    {/* Opsiyonel size/color */}
+                    {sizeColor ? <div style={sizeColorStyle}>{sizeColor}</div> : null}
 
-                {/* Barkod */}
-                <div style={barcodeWrapStyle}>
-                  <svg
-                    ref={(el) => {
-                      svgRefs.current[key] = el;
-                    }}
-                    style={{ width: "100%", height: "10.5mm" }} // ✅ mm ile stabil
-                  />
-                </div>
+                    {/* Barkod SVG */}
+                    <div style={barcodeWrapStyle}>
+                      <svg
+                        ref={(el) => {
+                          svgRefs.current[key] = el;
+                        }}
+                        style={{ width: "100%", height: 34 }}
+                      />
+                    </div>
 
-                {/* Barkod numarası */}
-                <div style={barcodeNumberStyle}>{it.barcode}</div>
-              </div>
-            );
-          })}
-
-          {labels.length === 0 && (
-            <div style={{ padding: 12, opacity: 0.7 }}>
-              Etiket yok. Soldan ürün seç / bugün eklenenleri seç.
+                    {/* Barkod numarası (KALSIN) */}
+                    <div style={barcodeNumberStyle}>{it.barcode}</div>
+                  </div>
+                );
+              })}
             </div>
-          )}
-        </div>
+          </div>
+        ))}
+
+        {labels.length === 0 && (
+          <div style={{ padding: 12, opacity: 0.7 }}>
+            Etiket yok. Soldan ürün seç / bugün eklenenleri seç.
+          </div>
+        )}
       </div>
     </>
   );
