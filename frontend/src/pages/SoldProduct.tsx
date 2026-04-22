@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { C, R, page as dsPage, card, btnPrimary, btnSecondary, input, select as dsSelect, th as dsTh, thRight as dsThRight, td as dsTd, tdRight as dsTdRight, badgeRose, badgeAmber } from "../lib/ds";
+import { C, R, page as dsPage, card, btnPrimary, btnSecondary, input, select as dsSelect, th as dsTh, td as dsTd, badgeRose, badgeAmber } from "../lib/ds";
 
 type SaleGroupRow = {
   sale_group_id: string;

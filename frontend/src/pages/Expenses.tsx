@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { C, R, page, card, cardPadded, input, select as dsSelect, btnPrimary, btnSecondary, btnDanger, th as dsTh, td as dsTd, fieldLabel, errBox } from "../lib/ds";
+import { C, page, card, cardPadded, input, select as dsSelect, btnPrimary, btnSecondary, btnDanger, th as dsTh, td as dsTd, fieldLabel, errBox } from "../lib/ds";
 
 type Expense = {
   id: number;
