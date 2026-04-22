@@ -177,6 +177,37 @@ fn add_product(payload: AddProductPayload) -> Result<String, String> {
 fn update_product(payload: db::UpdateProductPayload) -> Result<i64, String> {
   db::update_product(payload)
 }
+
+#[tauri::command]
+fn update_stock(payload: db::UpdateStockPayload) -> Result<i64, String> {
+  db::update_stock(payload)
+}
+
+#[tauri::command]
+fn get_velocity_report(days: i64) -> Result<Vec<db::VelocityRow>, String> {
+  db::get_velocity_report(days)
+}
+
+#[tauri::command]
+fn get_dead_stock(min_days: i64) -> Result<Vec<db::DeadStockRow>, String> {
+  db::get_dead_stock(min_days)
+}
+
+#[tauri::command]
+fn get_category_margin(days: i64) -> Result<Vec<db::CategoryMarginRow>, String> {
+  db::get_category_margin(days)
+}
+
+#[tauri::command]
+fn get_basket_pairs(limit: i64) -> Result<Vec<db::BasketPairRow>, String> {
+  db::get_basket_pairs(limit)
+}
+
+#[tauri::command]
+fn get_low_stock(max_stock: i64) -> Result<Vec<db::LowStockRow>, String> {
+  db::get_low_stock(max_stock)
+}
+
 #[derive(serde::Serialize)]
 pub struct CreatedProductDto {
   pub barcode: String,
@@ -238,6 +269,7 @@ fn create_sale(payload: CreateSalePayload) -> Result<CreateSaleResult, String> {
 struct UndoLastSaleResult {
   sale_group_id: String,
   restored_lines: i64,
+  sold_at: String,
 }
 
 #[tauri::command]
@@ -245,6 +277,7 @@ fn undo_last_sale() -> Result<UndoLastSaleResult, String> {
   db::undo_last_sale().map(|r| UndoLastSaleResult {
     sale_group_id: r.sale_group_id,
     restored_lines: r.restored_lines,
+    sold_at: r.sold_at,
   })
 }
 
@@ -732,11 +765,12 @@ fn main() {
     // pencere kapanırken otomatik yedek
     .on_window_event(|window, event| {
       if let tauri::WindowEvent::CloseRequested { .. } = event {
-        let app = window.app_handle().clone(); // 👈 kritik: clone
+        let app = window.app_handle().clone();
 
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
           let _ = backup::backup_sqlite_db(&app);
         });
+        let _ = handle.join();
       }
     })
     .invoke_handler(tauri::generate_handler![
@@ -745,6 +779,7 @@ fn main() {
       list_products,
       add_product,
       update_product,
+      update_stock,
       delete_product,
       find_product,
 
@@ -790,6 +825,13 @@ fn main() {
       list_categories_full,
       list_colors_full,
       list_sizes_full,
+
+      // analiz
+      get_velocity_report,
+      get_dead_stock,
+      get_category_margin,
+      get_basket_pairs,
+      get_low_stock,
 
       // backup
       backup_now,

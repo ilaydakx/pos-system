@@ -78,6 +78,11 @@ export default function ProductEdit() {
   const [buyPrice, setBuyPrice] = useState<string>("0");
   const [sellPrice, setSellPrice] = useState<string>("0");
 
+  // stok
+  const [magazaStok, setMagazaStok] = useState<string>("0");
+  const [depoStok, setDepoStok] = useState<string>("0");
+  const [stockNote, setStockNote] = useState<string>("");
+
   const bc = useMemo(() => decodeURIComponent(barcode ?? ""), [barcode]);
 
   const loadLists = async () => {
@@ -120,6 +125,8 @@ export default function ProductEdit() {
       setSize(p.size ?? "");
       setBuyPrice(String(p.buy_price ?? 0));
       setSellPrice(String(p.sell_price ?? 0));
+      setMagazaStok(String(p.magaza_stok ?? 0));
+      setDepoStok(String(p.depo_stok ?? 0));
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -164,6 +171,32 @@ export default function ProductEdit() {
       }
 
       nav("/products");
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onSaveStock = async () => {
+    try {
+      setErr("");
+      setSaving(true);
+
+      const ms = parseInt(magazaStok, 10);
+      const ds = parseInt(depoStok, 10);
+
+      if (!Number.isFinite(ms) || ms < 0) throw new Error("Mağaza stok 0 veya üzeri tam sayı olmalı");
+      if (!Number.isFinite(ds) || ds < 0) throw new Error("Depo stok 0 veya üzeri tam sayı olmalı");
+      if (ms + ds === 0) throw new Error("Toplam stok 0 olamaz — sıfırlamak istiyorsan ürünü sil.");
+
+      const changed = await invoke<number>("update_stock", {
+        payload: { barcode: bc, magaza_stok: ms, depo_stok: ds },
+      });
+      if (changed <= 0) throw new Error("Stok güncellenemedi.");
+
+      setStockNote("✅ Stok güncellendi");
+      setTimeout(() => setStockNote(""), 2500);
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -318,6 +351,71 @@ export default function ProductEdit() {
           <div style={selectWrap}>
             <div style={label}>Satış Fiyatı</div>
             <input style={input} value={sellPrice} onChange={(e) => setSellPrice(e.target.value)} />
+          </div>
+        </div>
+        <div style={{ fontSize: 12, opacity: 0.55, marginTop: -6 }}>
+          Fiyat değişikliği aynı ürün ailesindeki (aynı ürün kodu) tüm varyantlara uygulanır.
+        </div>
+
+        {/* Stok düzenleme */}
+        <div style={{
+          marginTop: 8,
+          padding: 16,
+          borderRadius: 14,
+          border: "1px solid rgba(17,24,39,0.10)",
+          background: "#f9fafb",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ ...label, fontSize: 15 }}>Stok Düzelt</div>
+            <div style={{ fontSize: 12, opacity: 0.6 }}>
+              Toplam: <b>{(parseInt(magazaStok) || 0) + (parseInt(depoStok) || 0)}</b>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={selectWrap}>
+              <div style={{ ...label, fontWeight: 600 }}>Mağaza Stok</div>
+              <input
+                style={input}
+                inputMode="numeric"
+                value={magazaStok}
+                onChange={(e) => setMagazaStok(e.target.value)}
+              />
+            </div>
+            <div style={selectWrap}>
+              <div style={{ ...label, fontWeight: 600 }}>Depo Stok</div>
+              <input
+                style={input}
+                inputMode="numeric"
+                value={depoStok}
+                onChange={(e) => setDepoStok(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10 }}>
+            <button
+              onClick={onSaveStock}
+              disabled={saving}
+              style={{
+                ...plusBtn,
+                background: "#111827",
+                color: "#fff",
+                border: "1px solid #111827",
+                opacity: saving ? 0.7 : 1,
+              }}
+              type="button"
+            >
+              Stoku Kaydet
+            </button>
+            {stockNote && (
+              <div style={{ fontSize: 13, color: "#059669", fontWeight: 700 }}>{stockNote}</div>
+            )}
+          </div>
+
+          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.6, lineHeight: 1.5 }}>
+            ⚠️ Bu alan mevcut stoğu doğrudan değiştirir. Satış/transfer geçmişi etkilenmez.
+            Düzeltme için kullan, rutin stok işlemleri için transfer kullan.
           </div>
         </div>
       </div>

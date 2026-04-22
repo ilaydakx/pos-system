@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { C, R, page, card, cardPadded, input, select as dsSelect, btnPrimary, btnSecondary, btnDanger, th as dsTh, td as dsTd, fieldLabel, errBox } from "../lib/ds";
 
 type Expense = {
   id: number;
@@ -28,7 +29,6 @@ export function Expenses() {
   const [periodFilter, setPeriodFilter] = useState<string>("ALL");
   const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
 
-  // form
   const [category, setCategory] = useState("");
   const [amount, setAmount] = useState<string>("");
   const [note, setNote] = useState("");
@@ -46,13 +46,9 @@ export function Expenses() {
     }
   };
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
 
-  const total = useMemo(() => {
-    return rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-  }, [rows]);
+  const total = useMemo(() => rows.reduce((s, r) => s + (Number(r.amount) || 0), 0), [rows]);
 
   const periods = useMemo(() => {
     const set = new Set<string>();
@@ -90,7 +86,6 @@ export function Expenses() {
       arr.push(r);
       map.set(p, arr);
     }
-
     for (const [, arr] of map) {
       arr.sort((a, b) => {
         const da = a.spent_at ?? "";
@@ -100,24 +95,20 @@ export function Expenses() {
         return (b.id ?? 0) - (a.id ?? 0);
       });
     }
-
     const keys = Array.from(map.keys()).sort((a, b) => {
       if (a === "(Dönem yok)") return 1;
       if (b === "(Dönem yok)") return -1;
       return a < b ? 1 : a > b ? -1 : 0;
     });
-
     return keys.map((k) => ({ period: k, rows: map.get(k)! }));
   }, [filteredRows]);
 
   const add = async () => {
     try {
       setErr("");
-
       const amt = Number(amount);
       if (!spentAt.trim()) return setErr("Tarih zorunlu");
       if (!Number.isFinite(amt) || amt <= 0) return setErr("Tutar 0'dan büyük olmalı");
-
       await invoke<number>("add_expense", {
         payload: {
           spent_at: spentAt.trim(),
@@ -127,10 +118,7 @@ export function Expenses() {
           note: note.trim() ? note.trim() : null,
         },
       });
-
-      // UI güncelle
       await load();
-
       setAmount("");
       setNote("");
     } catch (e) {
@@ -151,210 +139,181 @@ export function Expenses() {
   };
 
   return (
-    <div style={{ padding: 16, fontFamily: "system-ui" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <h2 style={{ margin: 0 }}>Giderler</h2>
-        <button onClick={load} disabled={loading} style={{ marginLeft: "auto" }}>
+    <div style={page}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.ink }}>Giderler</h2>
+        <button onClick={load} disabled={loading} style={{ ...btnSecondary, marginLeft: "auto" }}>
           Yenile
         </button>
       </div>
 
-      {err && (
-        <div style={{ marginTop: 12, color: "crimson", whiteSpace: "pre-wrap" }}>
-          ❌ {err}
-        </div>
-      )}
+      {err && <div style={{ ...errBox, marginBottom: 16 }}>{err}</div>}
 
-      <div style={{ marginTop: 12, padding: 12, border: "1px solid #eee", borderRadius: 10 }}>
+      {/* Add form */}
+      <div style={{ ...cardPadded, marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: C.ink2, marginBottom: 16 }}>Gider Ekle</div>
+
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "160px 220px minmax(220px, 1fr) 160px",
-            gap: 14,
+            gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+            gap: 12,
             alignItems: "end",
           }}
         >
           <div>
-            <div style={labelStyle}>Dönem</div>
+            <label style={fieldLabel}>Dönem</label>
             <input
               value={periodAuto}
               readOnly
-              style={inputReadOnlyStyle}
+              style={{ ...input, backgroundColor: C.subtle, color: C.ink3 }}
             />
           </div>
-
           <div>
-            <div style={labelStyle}>Tarih</div>
+            <label style={fieldLabel}>Tarih</label>
             <input
               type="date"
               value={spentAt}
               onChange={(e) => setSpentAt(e.target.value)}
-              style={inputStyle}
+              style={input}
             />
           </div>
-
           <div>
-            <div style={labelStyle}>Kategori</div>
+            <label style={fieldLabel}>Kategori</label>
             <input
               placeholder="örn: Kargo, Kira, Poşet..."
               value={category}
               onChange={(e) => setCategory(e.target.value)}
-              style={inputStyle}
+              style={input}
             />
           </div>
-
           <div>
-            <div style={labelStyle}>Tutar</div>
+            <label style={fieldLabel}>Tutar</label>
             <input
               placeholder="örn: 250"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              style={inputStyle}
+              onKeyDown={(e) => e.key === "Enter" && add()}
+              style={input}
             />
           </div>
         </div>
-        <div style={{ marginTop: 14 }}>
-          <div style={labelStyle}>Açıklama (opsiyonel)</div>
+
+        <div style={{ marginTop: 12 }}>
+          <label style={fieldLabel}>Açıklama (opsiyonel)</label>
           <input
             placeholder="örn: Ocak kargo gideri"
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            style={inputStyle}
+            onKeyDown={(e) => e.key === "Enter" && add()}
+            style={input}
           />
         </div>
 
-        <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end" }}>
-          <button onClick={add}>+ Gider Ekle</button>
+        <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
+          <button onClick={add} style={btnPrimary}>+ Gider Ekle</button>
         </div>
       </div>
 
-      <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ opacity: 0.8 }}>
-          Toplam: <b>{fmtMoney(total)}</b>
-        </div>
-        <div style={{ marginLeft: "auto", opacity: 0.8 }}>
-          {filteredRows.length} kayıt
+      {/* Filters + summary */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+        <select
+          value={periodFilter}
+          onChange={(e) => setPeriodFilter(e.target.value)}
+          style={{ ...dsSelect, width: "auto", minWidth: 140 }}
+        >
+          <option value="ALL">Tüm dönemler</option>
+          {periods.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+
+        <select
+          value={categoryFilter}
+          onChange={(e) => setCategoryFilter(e.target.value)}
+          style={{ ...dsSelect, width: "auto", minWidth: 160 }}
+        >
+          <option value="ALL">Tüm kategoriler</option>
+          {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+
+        <div style={{ marginLeft: "auto", fontSize: 14, color: C.ink2 }}>
+          Toplam: <span style={{ fontWeight: 700 }}>{fmtMoney(total)}</span>
+          <span style={{ color: C.ink4, marginLeft: 8 }}>{filteredRows.length} kayıt</span>
         </div>
       </div>
 
-      <div style={{ marginTop: 12, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div style={labelStyle}>Döneme göre</div>
-          <select value={periodFilter} onChange={(e) => setPeriodFilter(e.target.value)} style={selectStyle}>
-            <option value="ALL">Tümü</option>
-            {periods.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div style={labelStyle}>Kategoriye göre</div>
-          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={selectStyle}>
-            <option value="ALL">Tümü</option>
-            {categories.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
+      {/* Table */}
       {loading ? (
-        <div style={{ marginTop: 16 }}>Yükleniyor...</div>
+        <div style={{ padding: "32px 0", textAlign: "center", color: C.ink4, fontSize: 14 }}>Yükleniyor...</div>
+      ) : grouped.length === 0 ? (
+        <div style={{ ...cardPadded, color: C.ink4, textAlign: "center" }}>Henüz gider yok.</div>
       ) : (
-        <div style={{ marginTop: 12 }}>
-          {grouped.length === 0 ? (
-            <div style={{ opacity: 0.7, padding: 12 }}>Henüz gider yok.</div>
-          ) : (
-            grouped.map((g) => {
-              const subtotal = g.rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-              return (
-                <div key={g.period} style={{ marginBottom: 16 }}>
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, margin: "8px 0" }}>
-                    <h3 style={{ margin: 0 }}>{g.period}</h3>
-                    <div style={{ opacity: 0.75 }}>
-                      Ara Toplam: <b>{fmtMoney(subtotal)}</b>
-                    </div>
-                    <div style={{ marginLeft: "auto", opacity: 0.75 }}>{g.rows.length} kayıt</div>
-                  </div>
-
-                  <div style={{ overflow: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
-                      <thead>
-                        <tr>
-                          {["Tarih", "Kategori", "Açıklama", "Tutar", "Sil"].map((h) => (
-                            <th
-                              key={h}
-                              style={{
-                                textAlign: "left",
-                                borderBottom: "1px solid #ddd",
-                                padding: "10px 8px",
-                                position: "sticky",
-                                top: 0,
-                                background: "white",
-                              }}
-                            >
-                              {h}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-
-                      <tbody>
-                        {g.rows.map((r) => (
-                          <tr key={r.id}>
-                            <td style={cell}>{r.spent_at}</td>
-                            <td style={cell}>{r.category ?? "-"}</td>
-                            <td style={cell}>{r.note ?? "-"}</td>
-                            <td style={cell}>{fmtMoney(r.amount)}</td>
-                            <td style={cell}>
-                              <button onClick={() => del(r.id)} style={{ cursor: "pointer" }}>
-                                🗑
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+        <div style={{ display: "grid", gap: 16 }}>
+          {grouped.map((g) => {
+            const subtotal = g.rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+            return (
+              <div key={g.period} style={card}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: 12,
+                    padding: "12px 16px",
+                    borderBottom: `1px solid ${C.border}`,
+                  }}
+                >
+                  <span style={{ fontWeight: 700, fontSize: 15, color: C.ink }}>{g.period}</span>
+                  <span style={{ fontSize: 13, color: C.ink3 }}>
+                    Ara Toplam: <span style={{ fontWeight: 600, color: C.ink }}>{fmtMoney(subtotal)}</span>
+                  </span>
+                  <span style={{ marginLeft: "auto", fontSize: 12, color: C.ink4 }}>{g.rows.length} kayıt</span>
                 </div>
-              );
-            })
-          )}
+
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+                    <thead>
+                      <tr>
+                        {["Tarih", "Kategori", "Açıklama", "Tutar", ""].map((h) => (
+                          <th key={h} style={h === "Tutar" ? { ...dsTh, textAlign: "right" } : dsTh}>
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {g.rows.map((r) => (
+                        <tr key={r.id}>
+                          <td style={dsTd}>{r.spent_at}</td>
+                          <td style={dsTd}>{r.category ?? <span style={{ color: C.ink4 }}>—</span>}</td>
+                          <td style={{ ...dsTd, color: r.note ? C.ink : C.ink4 }}>{r.note || "—"}</td>
+                          <td style={{ ...dsTd, textAlign: "right", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+                            {fmtMoney(r.amount)}
+                          </td>
+                          <td style={{ ...dsTd, textAlign: "right" }}>
+                            <button
+                              onClick={() => del(r.id)}
+                              style={{ ...btnDanger, height: 30, padding: "0 10px", fontSize: 12 }}
+                            >
+                              Sil
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-const cell: React.CSSProperties = {
-  padding: "10px 8px",
-  borderBottom: "1px solid #f0f0f0",
-  whiteSpace: "nowrap",
-};
-const labelStyle: React.CSSProperties = { fontSize: 12, opacity: 0.75, marginBottom: 6 };
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: 10,
-  border: "1px solid #e5e7eb",
-  borderRadius: 10,
-  boxSizing: "border-box",
-};
-const inputReadOnlyStyle: React.CSSProperties = {
-  ...inputStyle,
-  background: "#fafafa",
-};
-const selectStyle: React.CSSProperties = {
-  ...inputStyle,
-  padding: 8,
-};
 function derivePeriod(spentAt: string): string {
   const s = (spentAt || "").trim();
-  if (s.length >= 7) return s.slice(0, 7); 
+  if (s.length >= 7) return s.slice(0, 7);
   return "";
 }
 

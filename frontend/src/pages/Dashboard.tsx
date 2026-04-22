@@ -787,10 +787,9 @@ const tablesGrid: React.CSSProperties = {
 
 const card: React.CSSProperties = {
   background: "white",
-  border: "1px solid #EEE8E4",
-  borderRadius: 16,
+  border: "1px solid #EAE8E5",
+  borderRadius: 14,
   padding: 14,
-  boxShadow: "0 8px 24px rgba(17, 24, 39, 0.06)",
 };
 
 const cardHeadRow: React.CSSProperties = {
@@ -806,10 +805,9 @@ const cardHint: React.CSSProperties = { fontSize: 12, opacity: 0.65, marginTop: 
 
 const kpiCard: React.CSSProperties = {
   background: "white",
-  border: "1px solid #EEE8E4",
-  borderRadius: 16,
+  border: "1px solid #EAE8E5",
+  borderRadius: 14,
   padding: 14,
-  boxShadow: "0 8px 24px rgba(17, 24, 39, 0.06)",
   minHeight: 86,
 };
 
@@ -849,19 +847,21 @@ const table: React.CSSProperties = { width: "100%", borderCollapse: "collapse", 
 
 const th: React.CSSProperties = {
   textAlign: "left",
-  fontSize: 12,
-  fontWeight: 700,
-  color: "#374151",
-  padding: "10px 10px",
-  borderBottom: "1px solid #e5e7eb",
+  fontSize: 11,
+  fontWeight: 600,
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  color: "#9CA3AF",
+  padding: "10px 16px",
+  borderBottom: "1px solid #EAE8E5",
   position: "sticky",
   top: 0,
-  background: "#FFFBF9",
+  background: "#FAF9F8",
 };
 
 const td: React.CSSProperties = {
-  padding: "12px 10px",
-  borderBottom: "1px solid #f3f4f6",
+  padding: "12px 16px",
+  borderBottom: "1px solid #EAE8E5",
   whiteSpace: "nowrap",
 };
 
@@ -871,7 +871,6 @@ const btnSoft: React.CSSProperties = {
   borderRadius: 12,
   padding: "10px 12px",
   cursor: "pointer",
-  boxShadow: "0 1px 6px rgba(0,0,0,0.04)",
 };
 
 const segWrap: React.CSSProperties = {
@@ -880,7 +879,6 @@ const segWrap: React.CSSProperties = {
   background: "white",
   borderRadius: 12,
   overflow: "hidden",
-  boxShadow: "0 1px 6px rgba(0,0,0,0.04)",
 };
 
 const segBtn: React.CSSProperties = {

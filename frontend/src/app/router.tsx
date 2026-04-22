@@ -14,6 +14,7 @@ import ProtectedRoute from "../ProtectedRoute";
 import Settings from "../pages/Settings";
 import BarcodePrint from "../pages/BarcodePrint";
 import ProductEdit from "../pages/ProductEdit";
+import { Analytics } from "../pages/Analytics";
 
 export const router = createBrowserRouter([
   { path: "/unlock", element: <Unlock /> },
@@ -55,6 +56,7 @@ export const router = createBrowserRouter([
       { path: "soldproducts", element: <SoldProducts /> },
       { path: "settings", element: <Settings /> },
       { path: "barcode-print", element: <BarcodePrint /> },
+      { path: "analytics", element: <Analytics /> },
     ],
   },
 ]);

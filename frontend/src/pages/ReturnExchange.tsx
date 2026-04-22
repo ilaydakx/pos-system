@@ -2,9 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 
-
 type Loc = "MAGAZA" | "DEPO";
-
 
 type Product = {
   barcode: string;
@@ -23,9 +21,8 @@ type Product = {
 };
 
 type SaleLine = {
-  // sales tablosundaki satır
   id?: number;
-  sold_at: string; 
+  sold_at: string;
   qty: number;
   unit_price: number;
   total: number;
@@ -38,131 +35,131 @@ type ExchangeCartItem = {
   name: string;
   qty: number;
   sold_from: Loc;
-  unit_price: number; 
+  unit_price: number;
 };
 
 const DAYS = 15;
 
-export function ReturnExchange() {
-  const [err, setErr] = useState<string>("");
-  const [loading, setLoading] = useState(false);
+type SaleRowProps = {
+  s: SaleLine;
+  selected: SaleLine | null;
+  onSelect: (s: SaleLine) => void;
+};
 
-  // giriş barkodu (iade/değişim yapılacak ürün)
+function SaleRow({ s, selected, onSelect }: SaleRowProps) {
+  const refunded = Math.max(0, Number(s.refunded_qty ?? 0));
+  const left     = Math.max(0, s.qty - refunded);
+  const disabled = left <= 0;
+  const isSel    = !!(selected && (
+    s.id != null && selected.id != null
+      ? selected.id === s.id
+      : selected.sold_at    === s.sold_at    &&
+        selected.unit_price === s.unit_price &&
+        selected.qty        === s.qty        &&
+        selected.sold_from  === s.sold_from
+  ));
+  return (
+    <div
+      onClick={() => !disabled && onSelect(s)}
+      style={{
+        display: "flex", alignItems: "center", gap: 14,
+        padding: "12px 14px", borderRadius: 12, flexWrap: "wrap" as const,
+        opacity: disabled ? 0.4 : 1,
+        cursor: disabled ? "default" : "pointer",
+        background: isSel ? "#f0fdf4" : "#fafaf9",
+        border: isSel ? "1.5px solid #059669" : "1.5px solid #EAE8E5",
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 700, fontSize: 13, color: "#111827" }}>{soldAtText(s.sold_at)}</div>
+        <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>
+          {s.sold_from === "MAGAZA" ? "Mağaza" : "Depo"} · {s.qty} adet
+        </div>
+      </div>
+      <div style={{ textAlign: "right", flexShrink: 0 }}>
+        <div style={{ fontWeight: 800, fontSize: 14 }}>{fmtMoney(s.total)}</div>
+        <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>{fmtMoney(s.unit_price)} / ad</div>
+      </div>
+      <div style={{ textAlign: "right", flexShrink: 0, minWidth: 48 }}>
+        <div style={{ fontSize: 10, color: "#9ca3af", fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: 0.3 }}>Kalan</div>
+        <div style={{ fontWeight: 900, fontSize: 16, color: left > 0 ? "#111827" : "#9ca3af" }}>{left}</div>
+      </div>
+      {isSel && <div style={{ color: "#16a34a", fontSize: 16, flexShrink: 0 }}>✓</div>}
+    </div>
+  );
+}
+
+function fmtMoney(v: number) {
+  return new Intl.NumberFormat("tr-TR", {
+    style: "currency",
+    currency: "TRY",
+    maximumFractionDigits: 2,
+  }).format(Number.isFinite(v) ? v : 0);
+}
+
+function soldAtText(s: string) {
+  return s.replace("T", " ").slice(0, 16);
+}
+
+export function ReturnExchange() {
+  const [err, setErr]         = useState<string>("");
+  const [loading, setLoading] = useState(false);
   const [barcode, setBarcode] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const [product, setProduct] = useState<Product | null>(null);
-  const [history, setHistory] = useState<SaleLine[]>([]);
+  const [product, setProduct]   = useState<Product | null>(null);
+  const [history, setHistory]   = useState<SaleLine[]>([]);
   const [selected, setSelected] = useState<SaleLine | null>(null);
 
-  const [mode, setMode] = useState<"REFUND" | "EXCHANGE">("REFUND");
+  const [mode, setMode]                     = useState<"REFUND" | "EXCHANGE">("REFUND");
   const [diffPaymentMethod, setDiffPaymentMethod] = useState<"CASH" | "CARD">("CASH");
-  // iade adet ve iade stok lokasyonu
-  const [returnQty, setReturnQty] = useState(1);
-  const [returnTo, setReturnTo] = useState<Loc>("MAGAZA");
+  const [returnQty, setReturnQty]           = useState(1);
+  const [returnTo, setReturnTo]             = useState<Loc>("MAGAZA");
 
-  // satış geçmişi yoksa devam onayı
-  const [allowNoHistory, setAllowNoHistory] = useState(false);
-
-  // değişimde verilecek ürünler sepeti
   const [giveBarcode, setGiveBarcode] = useState("");
-  const [cart, setCart] = useState<ExchangeCartItem[]>([]);
-
-  // ---------- helpers ----------
+  const [cart, setCart]               = useState<ExchangeCartItem[]>([]);
 
   const focusBarcode = () => setTimeout(() => inputRef.current?.focus(), 50);
 
-  const soldAtText = (s: string) => {
-    return s.replace("T", " ").slice(0, 19);
-  };
-
-  const fmtMoney = (v: number) =>
-    new Intl.NumberFormat("tr-TR", {
-      style: "currency",
-      currency: "TRY",
-      maximumFractionDigits: 2,
-    }).format(Number.isFinite(v) ? v : 0);
-
   const refundableMax = useMemo(() => {
     if (!selected) return 0;
-    const refunded = Math.max(0, Number(selected.refunded_qty ?? 0));
-    const max = Math.max(0, selected.qty - refunded);
-    return max;
+    return Math.max(0, selected.qty - Math.max(0, Number(selected.refunded_qty ?? 0)));
   }, [selected]);
 
   useEffect(() => {
-    if (!selected) {
-      setReturnQty(1);
-      return;
-    }
+    if (!selected) { setReturnQty(1); return; }
     const max = refundableMax;
     if (max <= 0) setReturnQty(1);
     else setReturnQty((q) => Math.min(Math.max(1, q), max));
-
-    // satış nereden yapıldıysa kullanıcı görsün ama iade varsayılan MAGAZA
-    setReturnTo("MAGAZA");
+    // Stok, satışın yapıldığı lokasyona geri döner — MAGAZA'ya değil.
+    setReturnTo(selected.sold_from ?? "MAGAZA");
   }, [selected, refundableMax]);
 
   const returnUnitPrice = selected?.unit_price ?? 0;
-  const returnTotal = returnUnitPrice * (returnQty || 0);
+  const returnTotal     = returnUnitPrice * (returnQty || 0);
+  const cartTotal       = useMemo(() => cart.reduce((s, it) => s + it.unit_price * it.qty, 0), [cart]);
+  const diff            = useMemo(() => cartTotal - returnTotal, [cartTotal, returnTotal]);
 
-  const cartTotal = useMemo(
-    () => cart.reduce((sum, it) => sum + (it.unit_price || 0) * (it.qty || 0), 0),
-    [cart]
-  );
-
-  const diff = useMemo(() => cartTotal - returnTotal, [cartTotal, returnTotal]);
-
-  useEffect(() => {
-    if (diff > 0 && !diffPaymentMethod) setDiffPaymentMethod("CASH");
-  }, [diff]);
+  useEffect(() => { if (diff > 0 && !diffPaymentMethod) setDiffPaymentMethod("CASH"); }, [diff]);
 
   const clearAll = () => {
-    setErr("");
-    setProduct(null);
-    setHistory([]);
-    setSelected(null);
-    setAllowNoHistory(false);
-    setReturnQty(1);
-    setReturnTo("MAGAZA");
-    setGiveBarcode("");
-    setCart([]);
-    setDiffPaymentMethod("CASH");
+    setErr(""); setProduct(null); setHistory([]); setSelected(null);
+    setReturnQty(1); setReturnTo("MAGAZA");
+    setMode("REFUND");
+    setGiveBarcode(""); setCart([]); setDiffPaymentMethod("CASH");
   };
 
-  // ---------- backend calls ----------
-
   const fetchProductAndHistory = async (bc: string) => {
-    setLoading(true);
-    setErr("");
-    setAllowNoHistory(false);
-    setSelected(null);
-    setHistory([]);
-    setProduct(null);
-
+    setLoading(true); setErr("");
+    setSelected(null); setHistory([]); setProduct(null);
     try {
-      // 1) ürün
       const p = await invoke<Product | null>("find_product", { barcode: bc });
-      if (!p) {
-        setErr("Ürün bulunamadı.");
-        return;
-      }
+      if (!p) { setErr("Ürün bulunamadı."); return; }
       setProduct(p);
-
-      // 2) son 15 gün satış geçmişi
       try {
-        const rows = await invoke<SaleLine[]>("list_sales_by_barcode", {
-          payload: {
-            barcode: bc.trim(),
-            days: DAYS,
-          },
-        });
-        const sorted = [...rows].sort((a, b) => (a.sold_at < b.sold_at ? 1 : -1));
-        setHistory(sorted);
-      } catch (e) {
-        setHistory([]);
-        console.warn("list_sales_by_barcode failed:", e);
-      }
+        const rows = await invoke<SaleLine[]>("list_sales_by_barcode", { payload: { barcode: bc.trim(), days: 9999 } });
+        setHistory([...rows].sort((a, b) => a.sold_at < b.sold_at ? 1 : -1));
+      } catch { setHistory([]); }
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -173,8 +170,7 @@ export function ReturnExchange() {
   const scanReturnBarcode = async () => {
     const bc = barcode.trim();
     if (!bc) return;
-    clearAll();
-    setBarcode(bc);
+    clearAll(); setBarcode(bc);
     await fetchProductAndHistory(bc);
   };
 
@@ -182,641 +178,644 @@ export function ReturnExchange() {
     const bc = giveBarcode.trim();
     if (!bc) return;
     setErr("");
-
     try {
       const p = await invoke<Product | null>("find_product", { barcode: bc });
-      if (!p) {
-        await message("Ürün bulunamadı", { title: "Değişim" });
-        return;
-      }
-
+      if (!p) { await message("Ürün bulunamadı", { title: "Değişim" }); return; }
       setCart((prev) => {
         const idx = prev.findIndex((x) => x.barcode === bc);
-        if (idx >= 0) {
-          const cp = [...prev];
-          cp[idx] = { ...cp[idx], qty: cp[idx].qty + 1 };
-          return cp;
-        }
-        return [
-          ...prev,
-          {
-            barcode: p.barcode,
-            name: p.name,
-            qty: 1,
-            sold_from: "MAGAZA",
-            unit_price: p.sell_price,
-          },
-        ];
+        if (idx >= 0) { const cp = [...prev]; cp[idx] = { ...cp[idx], qty: cp[idx].qty + 1 }; return cp; }
+        return [...prev, { barcode: p.barcode, name: p.name, qty: 1, sold_from: "MAGAZA", unit_price: p.sell_price }];
       });
-
       setGiveBarcode("");
-    } catch (e) {
-      setErr(String(e));
-    }
-  };
-
-  const ensureCanProceedWithoutHistory = async (): Promise<boolean> => {
-    if (history.length > 0) return true;
-    if (allowNoHistory) return true;
-
-    const ok = await confirm(
-      `Bu barkod için son ${DAYS} gün içinde satış bulunamadı. Yine de devam etmek ister misin?`,
-      { title: "Satış bulunamadı", kind: "warning" }
-    );
-
-    if (ok) setAllowNoHistory(true);
-    return ok;
+    } catch (e) { setErr(String(e)); }
   };
 
   const completeRefund = async () => {
     if (!product) return;
-
-    const okNoHistory = await ensureCanProceedWithoutHistory();
-    if (!okNoHistory) return;
-
-    if (history.length > 0 && !selected) {
-      await message("Lütfen listeden bir satış satırı seç.", { title: "İade" });
-      return;
-    }
-
-    const unit_price = selected?.unit_price ?? 0;
-
-    const payload = {
-      barcode: product.barcode,
-      qty: returnQty,
-      return_to: returnTo,
-      sold_at: selected?.sold_at ?? null,
-      sold_from: selected?.sold_from ?? null,
-      unit_price,
-      mode: "REFUND",
-    };
-
+    if (history.length === 0) { await message("Bu ürüne ait satış kaydı bulunamadı. İade yapılamaz.", { title: "İade Engellendi", kind: "warning" }); return; }
+    if (!selected) { await message("Lütfen soldaki listeden bir satış satırı seçin.", { title: "İade" }); return; }
     try {
-      setLoading(true);
-      setErr("");
-
-      await invoke("create_return", { payload });
-
+      setLoading(true); setErr("");
+      await invoke("create_return", { payload: {
+        barcode: product.barcode, qty: returnQty, return_to: returnTo,
+        sold_at: selected?.sold_at ?? null, sold_from: selected?.sold_from ?? null,
+        unit_price: selected?.unit_price ?? 0, mode: "REFUND",
+      }});
       await message("İade tamamlandı.", { title: "İade / Değişim" });
-
-      // Yeniden yükle
       await fetchProductAndHistory(product.barcode);
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { setErr(String(e)); } finally { setLoading(false); }
   };
 
   const completeExchange = async () => {
     if (!product) return;
-
-    const okNoHistory = await ensureCanProceedWithoutHistory();
-    if (!okNoHistory) return;
-
-    if (history.length > 0 && !selected) {
-      await message("Lütfen listeden bir satış satırı seç.", { title: "Değişim" });
-      return;
-    }
-
-    if (cart.length === 0) {
-      await message("Değişim için verilecek ürün sepeti boş.", { title: "Değişim" });
-      return;
-    }
-
-    const payload = {
-      diff_paid_by_customer: diff > 0,
-      returned: {
-        barcode: product.barcode,
-        qty: returnQty,
-        return_to: returnTo,
-        sold_at: selected?.sold_at ?? null,
-        sold_from: selected?.sold_from ?? null,
-        unit_price: selected?.unit_price ?? 0,
-      },
-      given: cart.map((x) => ({
-        barcode: x.barcode,
-        qty: x.qty,
-        sold_from: x.sold_from,
-        unit_price: x.unit_price,
-      })),
-      summary: {
-        returned_total: returnTotal,
-        given_total: cartTotal,
-        diff,
-        diff_payment_method: diff > 0 ? diffPaymentMethod : null,
-      },
-      mode: "EXCHANGE",
-    };
-
+    if (history.length === 0) { await message("Bu ürüne ait satış kaydı bulunamadı. Değişim yapılamaz.", { title: "Değişim Engellendi", kind: "warning" }); return; }
+    if (!selected) { await message("Lütfen listeden bir satış satırı seç.", { title: "Değişim" }); return; }
+    if (cart.length === 0) { await message("Değişim için verilecek ürün sepeti boş.", { title: "Değişim" }); return; }
     const ok = await confirm(
       `İşlemi tamamla?\n\nİade: ${fmtMoney(returnTotal)}\nVerilen: ${fmtMoney(cartTotal)}\nFark: ${fmtMoney(diff)}${diff > 0 ? `\nFark Ödeme: ${diffPaymentMethod === "CASH" ? "Nakit" : "Kart"}` : ""}`,
       { title: "Değişimi tamamla", kind: "info" }
     );
     if (!ok) return;
-
     try {
-      setLoading(true);
-      setErr("");
-
-      await invoke("create_exchange", { payload });
-
+      setLoading(true); setErr("");
+      await invoke("create_exchange", { payload: {
+        diff_paid_by_customer: diff > 0,
+        returned: { barcode: product.barcode, qty: returnQty, return_to: returnTo,
+          sold_at: selected?.sold_at ?? null, sold_from: selected?.sold_from ?? null,
+          unit_price: selected?.unit_price ?? 0 },
+        given: cart.map((x) => ({ barcode: x.barcode, qty: x.qty, sold_from: x.sold_from, unit_price: x.unit_price })),
+        summary: { returned_total: returnTotal, given_total: cartTotal, diff, diff_payment_method: diff > 0 ? diffPaymentMethod : null },
+        mode: "EXCHANGE",
+      }});
       await message("Değişim tamamlandı.", { title: "İade / Değişim" });
-
-      setCart([]);
-      setGiveBarcode("");
+      setCart([]); setGiveBarcode("");
       await fetchProductAndHistory(product.barcode);
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { setErr(String(e)); } finally { setLoading(false); }
   };
 
-  // ---------- UI ----------
-
-  useEffect(() => {
-    focusBarcode();
-  }, []);
-
-  const headerRight = (
-    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-      <button onClick={() => { clearAll(); setBarcode(""); focusBarcode(); }} disabled={loading}>
-        Temizle
-      </button>
-    </div>
-  );
+  useEffect(() => { focusBarcode(); }, []);
 
   return (
-    <div style={{ padding: 16, fontFamily: "system-ui" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <h2 style={{ margin: 0 }}>İade / Değişim</h2>
-        <div style={{ marginLeft: "auto" }}>{headerRight}</div>
-      </div>
+    <div style={P.page}>
 
-      {/* Barkod giriş */}
-      <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center" }}>
-        <input
-          ref={inputRef}
-          value={barcode}
-          onChange={(e) => setBarcode(e.target.value)}
-          placeholder="İade/Değişim yapılacak ürün barkodu okut"
-          style={{ flex: 1, padding: 10 }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") scanReturnBarcode();
-          }}
-          disabled={loading}
-        />
-        <button onClick={scanReturnBarcode} disabled={loading || !barcode.trim()}>
-          Bul
-        </button>
-      </div>
-
-      {err && (
-        <div style={{ marginTop: 12, color: "crimson", whiteSpace: "pre-wrap" }}>❌ {err}</div>
-      )}
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 420px", gap: 16, marginTop: 16 }}>
-        {/* Sol: ürün + geçmiş */}
+      {/* ── Header ── */}
+      <div style={P.header}>
         <div>
-          {/* Ürün kartı */}
-          <div style={card}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-              <div>
-                <div style={{ fontSize: 14, opacity: 0.8 }}>Ürün</div>
-                <div style={{ fontWeight: 700, fontSize: 18 }}>{product ? product.name : "-"}</div>
-                <div style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>
-                  Barkod: <b>{product?.barcode ?? "-"}</b>
-                  {product?.product_code ? (
-                    <>
-                      {" "}• Kod: <b>{product.product_code}</b>
-                    </>
-                  ) : null}
-                  {product?.category ? (
-                    <>
-                      {" "}• Kategori: <b>{product.category}</b>
-                    </>
-                  ) : null}
-                </div>
-                <div style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>
-                  {product?.color ? <>Renk: <b>{product.color}</b></> : null}
-                  {product?.size ? <> {" "}• Beden: <b>{product.size}</b></> : null}
-                </div>
-              </div>
-
-              <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 14, opacity: 0.8 }}>Stok</div>
-                <div style={{ fontSize: 13, marginTop: 6 }}>
-                  Mağaza: <b>{product ? product.magaza_stok : 0}</b>
-                </div>
-                <div style={{ fontSize: 13, marginTop: 4 }}>
-                  Depo: <b>{product ? product.depo_stok : 0}</b>
-                </div>
-                <div style={{ fontSize: 13, marginTop: 4, opacity: 0.9 }}>
-                  Toplam: <b>{product ? product.magaza_stok + product.depo_stok : 0}</b>
-                </div>
-              </div>
-            </div>
-
-            <div style={{ marginTop: 10, fontSize: 13, opacity: 0.8 }}>
-              Son {DAYS} gün satış geçmişi aşağıda. Bulunamazsa devam edebilirsin.
-            </div>
-          </div>
-
-          {/* Geçmiş */}
-          <div style={{ ...card, marginTop: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ fontWeight: 700 }}>Satın alım geçmişi (son {DAYS} gün)</div>
-              <div style={{ fontSize: 12, opacity: 0.75 }}>{history.length} kayıt</div>
-            </div>
-
-            {loading ? (
-              <div style={{ marginTop: 10, opacity: 0.8 }}>Yükleniyor...</div>
-            ) : history.length === 0 ? (
-              <div style={{ marginTop: 10, opacity: 0.75 }}>
-                Satış bulunamadı.
-                {allowNoHistory ? (
-                  <div style={{ marginTop: 6, color: "seagreen" }}>Devam izni verildi.</div>
-                ) : (
-                  <div style={{ marginTop: 6, opacity: 0.8 }}>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div style={{ marginTop: 10, overflow: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
-                  <thead>
-                    <tr>
-                      {[
-                        "Seç",
-                        "Tarih",
-                        "Adet",
-                        "Birim",
-                        "Toplam",
-                        "Nereden",
-                        "Kalan",
-                      ].map((h) => (
-                        <th
-                          key={h}
-                          style={{
-                            textAlign: "left",
-                            borderBottom: "1px solid #ddd",
-                            padding: "8px",
-                            position: "sticky",
-                            top: 0,
-                            background: "white",
-                            fontSize: 13,
-                          }}
-                        >
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {history.map((s, idx) => {
-                      const refunded = Math.max(0, Number(s.refunded_qty ?? 0));
-                      const left = Math.max(0, s.qty - refunded);
-                      const disabled = left <= 0;
-                      const isSel = selected?.sold_at === s.sold_at && selected?.unit_price === s.unit_price && selected?.qty === s.qty;
-
-                      return (
-                        <tr key={idx} style={{ opacity: disabled ? 0.5 : 1 }}>
-                          <td style={cell}>
-                            <input
-                              type="radio"
-                              name="sale"
-                              disabled={disabled}
-                              checked={isSel}
-                              onChange={() => setSelected(s)}
-                            />
-                          </td>
-                          <td style={cell}>{soldAtText(s.sold_at)}</td>
-                          <td style={cell}>{s.qty}</td>
-                          <td style={cell}>{fmtMoney(s.unit_price)}</td>
-                          <td style={cell}>{fmtMoney(s.total)}</td>
-                          <td style={cell}>{s.sold_from}</td>
-                          <td style={cellStrong}>{left}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+          <h2 style={P.title}>İade / Değişim</h2>
+          <div style={P.subtitle}>Tüm satış geçmişine göre işlem yapılır</div>
         </div>
+        {product && (
+          <button type="button" onClick={() => { clearAll(); setBarcode(""); focusBarcode(); }} disabled={loading} style={P.ghostBtn}>
+            Temizle
+          </button>
+        )}
+      </div>
 
-        {/* Sağ: işlem paneli */}
-        <div>
-          <div style={card}>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                onClick={() => setMode("REFUND")}
-                disabled={!product || loading}
-                style={mode === "REFUND" ? btnActive : btn}
-              >
-                İade
-              </button>
-              <button
-                onClick={() => setMode("EXCHANGE")}
-                disabled={!product || loading}
-                style={mode === "EXCHANGE" ? btnActive : btn}
-              >
-                Değişim
-              </button>
+      {/* ── Barcode scan ── */}
+      <div style={P.card}>
+        <div style={P.fieldLabel}>İade / Değişim yapılacak ürün barkodu</div>
+        <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+          <input
+            ref={inputRef}
+            value={barcode}
+            onChange={(e) => setBarcode(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") scanReturnBarcode(); }}
+            placeholder="Barkod okut…"
+            disabled={loading}
+            inputMode="numeric"
+            autoFocus
+            style={P.barcodeInput}
+          />
+          <button
+            type="button"
+            onClick={scanReturnBarcode}
+            disabled={loading || !barcode.trim()}
+            style={{ ...P.addBtn, opacity: loading || !barcode.trim() ? 0.4 : 1 }}
+          >
+            {loading ? "…" : "Bul"}
+          </button>
+        </div>
+        {err && <div style={P.errBox}>{err}</div>}
+      </div>
+
+      {/* ── Main content: product + panel ── */}
+      {product && (
+        <div style={P.grid}>
+
+          {/* ── LEFT: product info + history ── */}
+          <div style={{ minWidth: 0 }}>
+
+            {/* Product card */}
+            <div style={P.card}>
+              <div style={{ display: "flex", gap: 16, justifyContent: "space-between", flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={P.productName}>{product.name}</div>
+                  <div style={P.productMeta}>
+                    <span style={{ fontFamily: "monospace" }}>{product.barcode}</span>
+                    {product.product_code && <span>Kod: {product.product_code}</span>}
+                    {product.category    && <span>{product.category}</span>}
+                    {product.color       && <span>{product.color}</span>}
+                    {product.size        && <span style={P.sizePill}>{product.size}</span>}
+                  </div>
+                </div>
+                <div style={P.stockBlock}>
+                  <div style={P.stockRow}>
+                    <span style={P.stockLabel}>Mağaza</span>
+                    <span style={P.stockVal}>{product.magaza_stok}</span>
+                  </div>
+                  <div style={P.stockRow}>
+                    <span style={P.stockLabel}>Depo</span>
+                    <span style={P.stockVal}>{product.depo_stok}</span>
+                  </div>
+                  <div style={{ ...P.stockRow, borderTop: "1px solid #f3f4f6", paddingTop: 6, marginTop: 2 }}>
+                    <span style={P.stockLabel}>Toplam</span>
+                    <span style={{ ...P.stockVal, fontWeight: 900 }}>{product.magaza_stok + product.depo_stok}</span>
+                  </div>
+                </div>
+              </div>
             </div>
 
-            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              <div>
-                <div style={{ fontSize: 13, opacity: 0.8 }}>İade adedi</div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
-                  <input
-                    type="number"
-                    min={1}
-                    max={Math.max(1, refundableMax || 999)}
-                    value={returnQty}
-                    onChange={(e) => setReturnQty(Math.max(1, Number(e.target.value || 1)))}
-                    style={{ width: 120, padding: 8 }}
-                    disabled={!product || loading}
-                  />
-                  {history.length > 0 ? (
-                    <div style={{ fontSize: 12, opacity: 0.75 }}>
-                      Seçili satıştan max: <b>{refundableMax}</b>
+            {/* History */}
+            <div style={{ ...P.card, marginTop: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                <span style={{ fontWeight: 800, fontSize: 14, color: "#111827" }}>Satış geçmişi</span>
+                <span style={{ fontSize: 12, color: "#9ca3af" }}>{history.length} kayıt</span>
+              </div>
+
+              {loading ? (
+                <div style={{ padding: "20px 0", textAlign: "center", color: "#9ca3af", fontSize: 13 }}>Yükleniyor…</div>
+              ) : history.length === 0 ? (
+                <div style={{ padding: "12px 14px", borderRadius: 12, background: "#fef2f2", border: "1px solid #fecaca" }}>
+                  <div style={{ fontWeight: 700, color: "#b91c1c", fontSize: 13 }}>İade / Değişim yapılamaz</div>
+                  <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 4 }}>Bu ürüne ait satış kaydı bulunamadı.</div>
+                </div>
+              ) : (() => {
+                const cutoff = new Date(Date.now() - DAYS * 86400 * 1000).toISOString();
+                const recent = history.filter((s) => s.sold_at >= cutoff);
+                const older  = history.filter((s) => s.sold_at < cutoff);
+                return (
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {recent.map((s) => (
+                      <SaleRow key={s.id != null ? String(s.id) : `${s.sold_at}-${s.unit_price}-${s.qty}-${s.sold_from}`} s={s} selected={selected} onSelect={setSelected} />
+                    ))}
+                    {older.length > 0 && (
+                      <>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "4px 0" }}>
+                          <div style={{ flex: 1, height: 1, background: "#f0eeec" }} />
+                          <span style={{ fontSize: 11, color: "#9ca3af", fontWeight: 600, whiteSpace: "nowrap" }}>Daha eski</span>
+                          <div style={{ flex: 1, height: 1, background: "#f0eeec" }} />
+                        </div>
+                        {older.map((s) => (
+                          <SaleRow key={s.id != null ? String(s.id) : `${s.sold_at}-${s.unit_price}-${s.qty}-${s.sold_from}`} s={s} selected={selected} onSelect={setSelected} />
+                        ))}
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
+          {/* ── RIGHT: action panel ── */}
+          <div style={{ minWidth: 0 }}>
+            <div style={P.card}>
+
+              {/* Mode toggle */}
+              <div style={P.modeToggle}>
+                <button type="button" disabled={!product || loading} onClick={() => setMode("REFUND")}
+                  style={mode === "REFUND" ? P.modeOn : P.modeOff}
+                >İade</button>
+                <button type="button" disabled={!product || loading} onClick={() => setMode("EXCHANGE")}
+                  style={mode === "EXCHANGE" ? P.modeOn : P.modeOff}
+                >Değişim</button>
+              </div>
+
+              {/* Qty + return location */}
+              <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
+                <div>
+                  <div style={P.fieldLabel}>İade adedi</div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
+                    <div style={P.qtyPill}>
+                      <button type="button" disabled={loading || returnQty <= 1}
+                        onClick={() => setReturnQty((q) => Math.max(1, q - 1))}
+                        style={{ ...P.qtyBtn, opacity: returnQty <= 1 ? 0.25 : 1 }}
+                      >−</button>
+                      <span style={P.qtyNum}>{returnQty}</span>
+                      <button type="button" disabled={loading || (refundableMax > 0 && returnQty >= refundableMax)}
+                        onClick={() => setReturnQty((q) => refundableMax > 0 ? Math.min(q + 1, refundableMax) : q + 1)}
+                        style={{ ...P.qtyBtn, opacity: (refundableMax > 0 && returnQty >= refundableMax) ? 0.25 : 1 }}
+                      >+</button>
                     </div>
-                  ) : (
-                    <div style={{ fontSize: 12, opacity: 0.75 }}></div>
-                  )}
+                    {refundableMax > 0 && (
+                      <span style={{ fontSize: 12, color: "#9ca3af" }}>maks {refundableMax}</span>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={P.fieldLabel}>Stok nereye dönecek?</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 6 }}>
+                    {(["MAGAZA", "DEPO"] as Loc[]).map((loc) => (
+                      <button key={loc} type="button" disabled={!product || loading}
+                        onClick={() => setReturnTo(loc)}
+                        style={returnTo === loc ? P.locOn : P.locOff}
+                      >
+                        {loc === "MAGAZA" ? "Mağaza" : "Depo"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Return total */}
+                <div style={P.summaryRow}>
+                  <span style={{ fontSize: 13, color: "#6b7280" }}>İade tutarı</span>
+                  <span style={{ fontWeight: 900, fontSize: 16 }}>{fmtMoney(returnTotal)}</span>
                 </div>
               </div>
 
-              <div>
-                <div style={{ fontSize: 13, opacity: 0.8 }}>İade stoğu nereye girsin?</div>
-                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                  <select
-                    value={returnTo}
-                    onChange={(e) => setReturnTo(e.target.value as Loc)}
-                    style={{ flex: 1, padding: 8 }}
-                    disabled={!product || loading}
-                  >
-                    <option value="MAGAZA">Mağaza</option>
-                    <option value="DEPO">Depo</option>
-                  </select>
-                </div>
-              </div>
-
-              <div style={{ borderTop: "1px solid #eee", paddingTop: 10 }}>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <div style={{ fontSize: 13, opacity: 0.8 }}>İade tutarı</div>
-                  <div style={{ fontWeight: 800 }}>{fmtMoney(returnTotal)}</div>
-                </div>
-                <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
-                  Fiyat, seçtiğin satış satırının birim fiyatından gelir (indirimli ise indirimli).
-                </div>
-              </div>
-            </div>
-
-            {mode === "REFUND" ? (
-              <div style={{ marginTop: 14 }}>
-                <button
+              {/* REFUND CTA */}
+              {mode === "REFUND" && (
+                <button type="button"
                   onClick={completeRefund}
                   disabled={!product || loading || returnQty <= 0}
-                  style={{ width: "100%", padding: 10, fontWeight: 700 }}
+                  style={{ ...P.ctaBtn, marginTop: 16, opacity: !product || loading || returnQty <= 0 ? 0.4 : 1 }}
                 >
                   İadeyi Tamamla
                 </button>
-              </div>
-            ) : (
-              <>
-                <div style={{ borderTop: "1px solid #eee", marginTop: 14, paddingTop: 14 }}>
-                  <div style={{ fontWeight: 700 }}>Verilecek ürünler (değişim sepeti)</div>
+              )}
 
-                  <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-                    <input
-                      value={giveBarcode}
-                      onChange={(e) => setGiveBarcode(e.target.value)}
-                      placeholder="Yeni ürün barkodu okut"
-                      style={{ flex: 1, padding: 10 }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") scanGiveBarcode();
-                      }}
-                      disabled={!product || loading}
-                    />
-                    <button onClick={scanGiveBarcode} disabled={!product || loading || !giveBarcode.trim()}>
-                      Ekle
-                    </button>
-                  </div>
+              {/* EXCHANGE section */}
+              {mode === "EXCHANGE" && (
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 16 }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: "#111827", marginBottom: 10 }}>Verilecek ürünler</div>
 
-                  {cart.length === 0 ? (
-                    <div style={{ marginTop: 10, opacity: 0.75 }}>Sepet boş.</div>
-                  ) : (
-                    <div style={{ marginTop: 10, overflow: "auto" }}>
-                      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 360 }}>
-                        <thead>
-                          <tr>
-                            {[
-                              "Ürün",
-                              "Adet",
-                              "Nereden",
-                              "Birim",
-                              "Toplam",
-                              "Sil",
-                            ].map((h) => (
-                              <th
-                                key={h}
-                                style={{
-                                  textAlign: "left",
-                                  borderBottom: "1px solid #ddd",
-                                  padding: "8px",
-                                  fontSize: 13,
-                                  position: "sticky",
-                                  top: 0,
-                                  background: "white",
-                                }}
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input
+                        value={giveBarcode}
+                        onChange={(e) => setGiveBarcode(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") scanGiveBarcode(); }}
+                        placeholder="Yeni ürün barkodu…"
+                        disabled={!product || loading}
+                        style={{ ...P.barcodeInput, fontSize: 15, padding: "10px 13px" }}
+                      />
+                      <button type="button" onClick={scanGiveBarcode}
+                        disabled={!product || loading || !giveBarcode.trim()}
+                        style={{ ...P.addBtn, opacity: !product || loading || !giveBarcode.trim() ? 0.4 : 1 }}
+                      >Ekle</button>
+                    </div>
+
+                    {/* Exchange cart items */}
+                    {cart.length === 0 ? (
+                      <div style={{ marginTop: 10, color: "#9ca3af", fontSize: 13 }}>Sepet boş.</div>
+                    ) : (
+                      <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+                        {cart.map((it) => (
+                          <div key={it.barcode} style={P.cartRow}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontWeight: 700, fontSize: 13 }}>{it.name}</div>
+                              <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 1, fontFamily: "monospace" }}>{it.barcode}</div>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                              {/* Qty */}
+                              <div style={{ ...P.qtyPill, padding: "2px 3px" }}>
+                                <button type="button" disabled={loading || it.qty <= 1}
+                                  onClick={() => setCart((prev) => prev.map((x) => x.barcode === it.barcode ? { ...x, qty: Math.max(1, x.qty - 1) } : x))}
+                                  style={{ ...P.qtyBtn, width: 24, height: 24, opacity: it.qty <= 1 ? 0.25 : 1 }}
+                                >−</button>
+                                <span style={{ ...P.qtyNum, minWidth: 18, fontSize: 13 }}>{it.qty}</span>
+                                <button type="button" disabled={loading}
+                                  onClick={() => setCart((prev) => prev.map((x) => x.barcode === it.barcode ? { ...x, qty: x.qty + 1 } : x))}
+                                  style={{ ...P.qtyBtn, width: 24, height: 24 }}
+                                >+</button>
+                              </div>
+                              {/* Location */}
+                              <select
+                                value={it.sold_from}
+                                onChange={(e) => setCart((prev) => prev.map((x) => x.barcode === it.barcode ? { ...x, sold_from: e.target.value as Loc } : x))}
+                                disabled={loading}
+                                style={P.smallSelect}
                               >
-                                {h}
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {cart.map((it) => {
-                            const total = it.unit_price * it.qty;
-                            return (
-                              <tr key={it.barcode}>
-                                <td style={cell}>
-                                  <div style={{ fontWeight: 700 }}>{it.name}</div>
-                                  <div style={{ fontSize: 12, opacity: 0.75 }}>{it.barcode}</div>
-                                </td>
-                                <td style={cell}>
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    value={it.qty}
-                                    onChange={(e) => {
-                                      const q = Math.max(1, Number(e.target.value || 1));
-                                      setCart((prev) =>
-                                        prev.map((x) => (x.barcode === it.barcode ? { ...x, qty: q } : x))
-                                      );
-                                    }}
-                                    style={{ width: 70, padding: 6 }}
-                                    disabled={loading}
-                                  />
-                                </td>
-                                <td style={cell}>
-                                  <select
-                                    value={it.sold_from}
-                                    onChange={(e) => {
-                                      const v = e.target.value as Loc;
-                                      setCart((prev) =>
-                                        prev.map((x) => (x.barcode === it.barcode ? { ...x, sold_from: v } : x))
-                                      );
-                                    }}
-                                    style={{ padding: 6 }}
-                                    disabled={loading}
-                                  >
-                                    <option value="MAGAZA">MAGAZA</option>
-                                    <option value="DEPO">DEPO</option>
-                                  </select>
-                                </td>
-                                <td style={cell}>{fmtMoney(it.unit_price)}</td>
-                                <td style={cellStrong}>{fmtMoney(total)}</td>
-                                <td style={cell}>
-                                  <button
-                                    onClick={() => setCart((prev) => prev.filter((x) => x.barcode !== it.barcode))}
-                                    disabled={loading}
-                                    style={{ cursor: "pointer" }}
-                                  >
-                                    🗑
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  <div style={{ borderTop: "1px solid #eee", marginTop: 12, paddingTop: 12 }}>
-                    <div style={{ display: "grid", gap: 8 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between" }}>
-                        <div style={{ opacity: 0.8 }}>İade</div>
-                        <div style={{ fontWeight: 800 }}>{fmtMoney(returnTotal)}</div>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between" }}>
-                        <div style={{ opacity: 0.8 }}>Verilen</div>
-                        <div style={{ fontWeight: 800 }}>{fmtMoney(cartTotal)}</div>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between" }}>
-                        <div style={{ opacity: 0.8 }}>Fark</div>
-                        <div style={{ fontWeight: 900 }}>{fmtMoney(diff)}</div>
-                      </div>
-                    </div>
-
-                    {diff > 0 && (
-                      <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8 }}>
-                        <div style={{ fontWeight: 700 }}>Fark Ödeme:</div>
-
-                        <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <input
-                            type="radio"
-                            name="diffpm"
-                            checked={diffPaymentMethod === "CASH"}
-                            onChange={() => setDiffPaymentMethod("CASH")}
-                          />
-                          Nakit
-                        </label>
-
-                        <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <input
-                            type="radio"
-                            name="diffpm"
-                            checked={diffPaymentMethod === "CARD"}
-                            onChange={() => setDiffPaymentMethod("CARD")}
-                          />
-                          Kart
-                        </label>
+                                <option value="MAGAZA">Mağaza</option>
+                                <option value="DEPO">Depo</option>
+                              </select>
+                              <span style={{ fontWeight: 700, fontSize: 13, minWidth: 60, textAlign: "right" }}>{fmtMoney(it.unit_price * it.qty)}</span>
+                              <button type="button" disabled={loading}
+                                onClick={() => setCart((prev) => prev.filter((x) => x.barcode !== it.barcode))}
+                                style={P.removeBtn}
+                              >✕</button>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     )}
 
-                    <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-                      <button
-                        onClick={() => setCart([])}
-                        disabled={loading || cart.length === 0}
-                        style={{ flex: 1, padding: 10 }}
-                      >
-                        Sepeti Temizle
-                      </button>
-                      <button
-                        onClick={completeExchange}
+                    {/* Summary */}
+                    <div style={{ marginTop: 14, borderTop: "1px solid #f3f4f6", paddingTop: 12, display: "grid", gap: 6 }}>
+                      <div style={P.summaryRow}>
+                        <span style={{ fontSize: 13, color: "#6b7280" }}>İade</span>
+                        <span style={{ fontWeight: 700 }}>{fmtMoney(returnTotal)}</span>
+                      </div>
+                      <div style={P.summaryRow}>
+                        <span style={{ fontSize: 13, color: "#6b7280" }}>Verilen</span>
+                        <span style={{ fontWeight: 700 }}>{fmtMoney(cartTotal)}</span>
+                      </div>
+                      <div style={{ ...P.summaryRow, borderTop: "1px solid #f3f4f6", paddingTop: 8, marginTop: 2 }}>
+                        <span style={{ fontSize: 14, fontWeight: 800, color: "#111827" }}>Fark</span>
+                        <span style={{ fontSize: 18, fontWeight: 900, color: diff > 0 ? "#d97706" : diff < 0 ? "#dc2626" : "#111827" }}>
+                          {fmtMoney(diff)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Diff payment */}
+                    {diff > 0 && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={P.fieldLabel}>Fark ödeme yöntemi</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 6 }}>
+                          <button type="button" onClick={() => setDiffPaymentMethod("CASH")}
+                            style={diffPaymentMethod === "CASH" ? P.locOn : P.locOff}
+                          >💵 Nakit</button>
+                          <button type="button" onClick={() => setDiffPaymentMethod("CARD")}
+                            style={diffPaymentMethod === "CARD" ? P.locOn : P.locOff}
+                          >💳 Kart</button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      <button type="button" onClick={() => setCart([])} disabled={loading || cart.length === 0}
+                        style={{ ...P.ghostBtn, opacity: cart.length === 0 ? 0.4 : 1 }}
+                      >Sepeti Temizle</button>
+                      <button type="button" onClick={completeExchange}
                         disabled={!product || loading || returnQty <= 0 || cart.length === 0}
-                        style={{ flex: 1, padding: 10, fontWeight: 800 }}
-                      >
-                        Değişimi Tamamla
-                      </button>
+                        style={{ ...P.ctaBtn, opacity: !product || loading || returnQty <= 0 || cart.length === 0 ? 0.4 : 1 }}
+                      >Değişimi Tamamla</button>
                     </div>
                   </div>
                 </div>
-              </>
-            )}
-          </div>
-
-          <div style={{ marginTop: 12, fontSize: 12, opacity: 0.75, lineHeight: 1.4 }}>
-            
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
-/*
-// satış lokasyonu kolon adı
-function col_for_loc(loc: string): string {
-  const up = (loc || "").toUpperCase();
-  return up === "DEPO" ? "depo_stok" : "magaza_stok";
-}
 
-// basit id üretimi (chrono yoksa bile çalışır)
-function chrono_like_id() {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const s = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(
-    d.getMinutes()
-  )}${pad(d.getSeconds())}`;
-  const rnd = Math.floor(Math.random() * 1e6)
-    .toString()
-    .padStart(6, "0");
-  return `${s}-${rnd}`;
-}
-*/
-const card: React.CSSProperties = {
-  border: "1px solid #e7e7e7",
-  borderRadius: 12,
-  padding: 12,
-  background: "white",
-};
+// ── Styles ────────────────────────────────────────────────────────────────────
 
-const cell: React.CSSProperties = {
-  padding: "8px",
-  borderBottom: "1px solid #f0f0f0",
-  whiteSpace: "nowrap",
-  verticalAlign: "top",
-};
+const P: Record<string, React.CSSProperties> = {
+  page: {
+    padding: 24,
+    fontFamily: "system-ui, -apple-system, sans-serif",
+    minHeight: "100%",
+    boxSizing: "border-box",
+  },
+  header: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 20,
+  },
+  title: {
+    margin: 0,
+    fontSize: 22,
+    fontWeight: 900,
+    color: "#111827",
+    lineHeight: 1.2,
+  },
+  subtitle: {
+    marginTop: 4,
+    fontSize: 13,
+    color: "#9ca3af",
+  },
+  ghostBtn: {
+    padding: "8px 14px",
+    borderRadius: 10,
+    border: "1px solid #e5e7eb",
+    background: "#fff",
+    fontSize: 13,
+    fontWeight: 700,
+    color: "#374151",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+    flexShrink: 0,
+  },
 
-const cellStrong: React.CSSProperties = {
-  ...cell,
-  fontWeight: 700,
-};
+  card: {
+    background: "#fff",
+    borderRadius: 14,
+    padding: 18,
+    border: "1px solid #EAE8E5",
+  },
+  fieldLabel: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: "#9ca3af",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  barcodeInput: {
+    flex: 1,
+    padding: "13px 15px",
+    borderRadius: 13,
+    border: "1.5px solid #e5e7eb",
+    fontSize: 20,
+    fontWeight: 800,
+    outline: "none",
+    background: "#fafaf9",
+    color: "#111827",
+    boxSizing: "border-box",
+    minWidth: 0,
+  },
+  addBtn: {
+    padding: "0 22px",
+    height: 52,
+    borderRadius: 13,
+    border: "none",
+    background: "#111827",
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: 800,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+    flexShrink: 0,
+  },
+  errBox: {
+    marginTop: 10,
+    padding: "10px 14px",
+    borderRadius: 12,
+    background: "#fef2f2",
+    border: "1px solid #fecaca",
+    color: "#b91c1c",
+    fontSize: 13,
+    fontWeight: 600,
+  },
 
-const btn: React.CSSProperties = {
-  flex: 1,
-  padding: "10px 12px",
-  cursor: "pointer",
-};
+  grid: {
+    display: "grid",
+    gridTemplateColumns: "minmax(0,1fr) 340px",
+    gap: 14,
+    marginTop: 12,
+    alignItems: "start",
+  },
 
-const btnActive: React.CSSProperties = {
-  ...btn,
-  fontWeight: 800,
-  outline: "2px solid #111",
+  // product card
+  productName: {
+    fontWeight: 900,
+    fontSize: 18,
+    color: "#111827",
+  },
+  productMeta: {
+    display: "flex",
+    gap: 8,
+    marginTop: 6,
+    fontSize: 12,
+    color: "#6b7280",
+    flexWrap: "wrap",
+    alignItems: "center",
+  },
+  sizePill: {
+    background: "#f3f4f6",
+    borderRadius: 5,
+    padding: "1px 7px",
+    fontWeight: 700,
+    color: "#374151",
+    fontSize: 12,
+  },
+  stockBlock: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 5,
+    flexShrink: 0,
+    minWidth: 90,
+  },
+  stockRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "baseline",
+  },
+  stockLabel: {
+    fontSize: 11,
+    color: "#9ca3af",
+    fontWeight: 600,
+  },
+  stockVal: {
+    fontSize: 14,
+    fontWeight: 800,
+    color: "#111827",
+  },
+
+  // action panel
+  modeToggle: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 8,
+  },
+  modeOn: {
+    padding: "11px 10px",
+    borderRadius: 12,
+    border: "2px solid #111827",
+    background: "#111827",
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  modeOff: {
+    padding: "11px 10px",
+    borderRadius: 12,
+    border: "2px solid #e5e7eb",
+    background: "#fff",
+    color: "#374151",
+    fontSize: 14,
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  qtyPill: {
+    display: "flex",
+    alignItems: "center",
+    gap: 2,
+    background: "#f7f7f5",
+    border: "1px solid #e5e7eb",
+    borderRadius: 10,
+    padding: "3px 4px",
+  },
+  qtyBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 7,
+    border: "none",
+    background: "transparent",
+    cursor: "pointer",
+    fontSize: 18,
+    fontWeight: 700,
+    color: "#374151",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  qtyNum: {
+    minWidth: 24,
+    textAlign: "center",
+    fontWeight: 900,
+    fontSize: 16,
+    color: "#111827",
+  },
+  locOn: {
+    padding: "10px",
+    borderRadius: 11,
+    border: "2px solid #111827",
+    background: "#111827",
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  locOff: {
+    padding: "10px",
+    borderRadius: 11,
+    border: "2px solid #e5e7eb",
+    background: "#fff",
+    color: "#374151",
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  summaryRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+  },
+  ctaBtn: {
+    width: "100%",
+    padding: "15px 12px",
+    borderRadius: 14,
+    border: "none",
+    background: "#111827",
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+
+  // exchange cart
+  cartRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px 12px",
+    borderRadius: 12,
+    background: "#FAF9F8",
+    border: "1px solid #EAE8E5",
+    flexWrap: "wrap",
+  },
+  smallSelect: {
+    padding: "5px 8px",
+    borderRadius: 8,
+    border: "1px solid #e5e7eb",
+    background: "#fff",
+    fontSize: 12,
+    fontWeight: 700,
+    color: "#374151",
+    outline: "none",
+    cursor: "pointer",
+  },
+  removeBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 6,
+    border: "1px solid #e5e7eb",
+    background: "#fff",
+    cursor: "pointer",
+    fontSize: 13,
+    color: "#9ca3af",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 0,
+  },
 };

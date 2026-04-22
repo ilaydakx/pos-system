@@ -467,17 +467,65 @@ pub fn add_product(
     return Err("Satış fiyatı sayı olmalı".to_string());
   }
 
+  let category = norm_opt(category);
+  let color = norm_opt(color);
+  let size = norm_opt(size);
+
+  let product_code_norm: Option<String> = norm_opt(product_code)
+    .map(|pc| pc.trim().to_uppercase().replace('-', ""));
+
+  let mb = magaza_baslangic.unwrap_or(0);
+  let db_val = depo_baslangic.unwrap_or(0);
+
+  // ── Aynı aile (product_code) + renk + beden zaten var mı? ──
+  // Varsa yeni ürün açmak yerine stoğunu artır.
+  if let Some(ref pc) = product_code_norm {
+    if !pc.is_empty() {
+      let existing: Option<(String, Option<String>)> = conn
+        .query_row(
+          "SELECT barcode, product_code FROM products
+           WHERE product_code = ?1
+             AND COALESCE(color,'') = COALESCE(?2,'')
+             AND COALESCE(size,'')  = COALESCE(?3,'')
+             AND COALESCE(is_active,1) = 1
+           LIMIT 1",
+          params![pc, color, size],
+          |r| Ok((r.get::<_,String>(0)?, r.get::<_,Option<String>>(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+      if let Some((existing_barcode, existing_pc)) = existing {
+        // Var olan ürünün stokunu artır
+        conn.execute(
+          "UPDATE products SET
+             magaza_stok      = COALESCE(magaza_stok,0) + ?1,
+             depo_stok        = COALESCE(depo_stok,0)   + ?2,
+             stock            = COALESCE(stock,0)        + ?3,
+             magaza_baslangic = COALESCE(magaza_baslangic,0) + ?1,
+             depo_baslangic   = COALESCE(depo_baslangic,0)   + ?2,
+             updated_at       = datetime('now','localtime')
+           WHERE barcode = ?4",
+          params![mb, db_val, mb + db_val, &existing_barcode],
+        )
+        .map_err(|e| e.to_string())?;
+
+        return Ok(CreatedProduct {
+          barcode: existing_barcode,
+          product_code: existing_pc,
+        });
+      }
+    }
+  }
+
+  // ── Yeni ürün oluştur ──
   let final_barcode = match norm_opt(barcode) {
     Some(b) => b,
     None => next_barcode(&conn)?,
   };
 
-  let category = norm_opt(category);
-  let color = norm_opt(color);
-  let size = norm_opt(size);
-
-  let product_code_final: Option<String> = match norm_opt(product_code) {
-    Some(pc) => Some(pc.trim().to_uppercase().replace('-', "")),
+  let product_code_final: Option<String> = match product_code_norm {
+    Some(pc) => Some(pc),
     None => {
       let prefix = normalize_prefix_from_category(category.as_deref());
       let pc = next_product_code_for_prefix(&conn, &prefix)?;
@@ -486,13 +534,7 @@ pub fn add_product(
   };
 
   let bp = buy_price.unwrap_or(0.0);
-  let mb = magaza_baslangic.unwrap_or(0);
-  let db = depo_baslangic.unwrap_or(0);
-
-  let st = stock.unwrap_or(mb + db);
-
-  let ms = mb;
-  let ds = db;
+  let st = stock.unwrap_or(mb + db_val);
 
   conn.execute(
     r#"
@@ -513,9 +555,9 @@ pub fn add_product(
       sell_price,
       st,
       mb,
-      db,
-      ms,
-      ds
+      db_val,
+      mb,
+      db_val
     ],
   )
   .map_err(|e| e.to_string())?;
@@ -591,21 +633,77 @@ pub fn update_product(payload: UpdateProductPayload) -> Result<i64, String> {
       WHERE barcode = ?1
         AND COALESCE(is_active,1)=1
       "#,
-      params![
-        bc,
-        product_code,
-        category,
-        name,
-        color,
-        size,
-        bp,
-        payload.sell_price
-      ],
+      params![bc, product_code, category, name, color, size, bp, payload.sell_price],
+    )
+    .map_err(|e| e.to_string())?;
+
+  // Fiyatları tüm aile üyelerine yay (aynı product_code, bu barkod hariç)
+  let effective_pc: Option<String> = product_code.clone().or_else(|| {
+    conn.query_row(
+      "SELECT product_code FROM products WHERE barcode = ?1",
+      params![bc],
+      |r| r.get(0),
+    ).ok().flatten()
+  });
+
+  if let Some(pc) = effective_pc {
+    if !pc.is_empty() {
+      conn.execute(
+        r#"
+        UPDATE products
+        SET buy_price  = ?1,
+            sell_price = ?2,
+            updated_at = datetime('now','localtime')
+        WHERE product_code = ?3
+          AND barcode != ?4
+          AND COALESCE(is_active,1) = 1
+        "#,
+        params![bp, payload.sell_price, pc, bc],
+      )
+      .map_err(|e| e.to_string())?;
+    }
+  }
+
+  Ok(changed as i64)
+}
+#[derive(serde::Deserialize)]
+pub struct UpdateStockPayload {
+  pub barcode: String,
+  pub magaza_stok: i64,
+  pub depo_stok: i64,
+}
+
+pub fn update_stock(payload: UpdateStockPayload) -> Result<i64, String> {
+  let bc = payload.barcode.trim();
+  if bc.is_empty() {
+    return Err("Barkod zorunlu".to_string());
+  }
+  if payload.magaza_stok < 0 || payload.depo_stok < 0 {
+    return Err("Stok negatif olamaz".to_string());
+  }
+
+  let conn = get_conn()?;
+  let total = payload.magaza_stok + payload.depo_stok;
+
+  let changed = conn
+    .execute(
+      r#"
+      UPDATE products
+      SET
+        magaza_stok = ?2,
+        depo_stok   = ?3,
+        stock       = ?4,
+        updated_at  = datetime('now','localtime')
+      WHERE barcode = ?1
+        AND COALESCE(is_active,1)=1
+      "#,
+      params![bc, payload.magaza_stok, payload.depo_stok, total],
     )
     .map_err(|e| e.to_string())?;
 
   Ok(changed as i64)
 }
+
 #[derive(serde::Serialize)]
 pub struct CategoryRow {
   pub id: i64,
@@ -1877,9 +1975,7 @@ fn col_for_loc(loc: &str) -> &'static str {
 }
 
 fn gen_group_id(prefix: &str) -> String {
-  use std::time::{SystemTime, UNIX_EPOCH};
-  let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
-  format!("{}{}", prefix, ms)
+  format!("{}{}", prefix, unique_ts_id())
 }
 fn seed_option_tables(conn: &Connection) -> Result<(), String> {
   // Bu fonksiyon sadece ilk migration/kurulum için: sözlük tabloları zaten doluysa
@@ -2006,6 +2102,7 @@ pub struct CreateSaleResult {
 pub struct UndoLastSaleResult {
   pub sale_group_id: String,
   pub restored_lines: i64,
+  pub sold_at: String,
 }
 //satışlar
 #[derive(serde::Serialize)]
@@ -2618,20 +2715,37 @@ pub fn create_sale(payload: CreateSalePayload) -> Result<CreateSaleResult, Strin
   })
 }
 
+// Satış geri alma penceresi: son 30 dakika.
+// Bu süre dışındaki satışlar geri alınamaz; eski kayıtlar korunur.
+const UNDO_WINDOW_MINUTES: i64 = 30;
+
 pub fn undo_last_sale() -> Result<UndoLastSaleResult, String> {
   let mut conn = get_conn()?;
   let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-  let last_group: Option<String> = tx
+  // Son 30 dakika içindeki en son satış grubunu bul.
+  // sold_at >= now - 30min şartı: eski satışların kazara geri alınmasını önler.
+  let last: Option<(String, String)> = tx
     .query_row(
-      "SELECT sale_group_id FROM sales WHERE sale_group_id IS NOT NULL AND COALESCE(voided,0)=0 ORDER BY id DESC LIMIT 1",
-      [],
-      |r| r.get(0),
+      "SELECT sale_group_id, sold_at
+       FROM sales
+       WHERE sale_group_id IS NOT NULL
+         AND COALESCE(voided,0) = 0
+         AND sold_at >= datetime('now','localtime', ?1)
+       ORDER BY id DESC
+       LIMIT 1",
+      params![format!("-{} minutes", UNDO_WINDOW_MINUTES)],
+      |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .optional()
     .map_err(|e| e.to_string())?;
 
-  let sale_group_id = last_group.ok_or_else(|| "Geri alınacak satış bulunamadı".to_string())?;
+  let (sale_group_id, sold_at) = last.ok_or_else(|| {
+    format!(
+      "Son {} dakika içinde geri alınabilecek satış bulunamadı.",
+      UNDO_WINDOW_MINUTES
+    )
+  })?;
 
   let mut restored_lines: i64 = 0;
   {
@@ -2640,12 +2754,12 @@ pub fn undo_last_sale() -> Result<UndoLastSaleResult, String> {
         r#"
         SELECT product_barcode, qty, COALESCE(sold_from, 'MAGAZA') AS sold_from
         FROM sales
-        WHERE sale_group_id = ?1 AND COALESCE(voided,0)=0
+        WHERE sale_group_id = ?1 AND COALESCE(voided,0) = 0
         "#,
       )
       .map_err(|e| e.to_string())?;
 
-    let rows = stmt
+    let rows: Vec<(String, i64, String)> = stmt
       .query_map(params![&sale_group_id], |r| {
         Ok((
           r.get::<_, String>(0)?,
@@ -2653,12 +2767,12 @@ pub fn undo_last_sale() -> Result<UndoLastSaleResult, String> {
           r.get::<_, String>(2)?,
         ))
       })
+      .map_err(|e| e.to_string())?
+      .collect::<Result<_, _>>()
       .map_err(|e| e.to_string())?;
 
-    for r in rows {
-      let (bc, qty, sold_from) = r.map_err(|e| e.to_string())?;
+    for (bc, qty, sold_from) in rows {
       let col = col_for_loc(&sold_from);
-
       tx.execute(
         &format!(
           "UPDATE products SET {c} = COALESCE({c},0) + ?1, stock = COALESCE(stock,0) + ?1 WHERE barcode = ?2",
@@ -2667,13 +2781,14 @@ pub fn undo_last_sale() -> Result<UndoLastSaleResult, String> {
         params![qty, &bc],
       )
       .map_err(|e| e.to_string())?;
-
       restored_lines += 1;
     }
   }
 
+  // Soft delete: voided=1 olarak işaretle, kaydı silme.
+  // İade kayıtlarının ref_sale_id'si sarkıklık yaratmaz ve denetim izi korunur.
   tx.execute(
-  "DELETE FROM sales WHERE sale_group_id = ?1 AND COALESCE(voided,0)=0",
+    "UPDATE sales SET voided = 1 WHERE sale_group_id = ?1 AND COALESCE(voided,0) = 0",
     params![&sale_group_id],
   )
   .map_err(|e| e.to_string())?;
@@ -2683,16 +2798,33 @@ pub fn undo_last_sale() -> Result<UndoLastSaleResult, String> {
   Ok(UndoLastSaleResult {
     sale_group_id,
     restored_lines,
+    sold_at,
   })
 }
 
 fn chrono_like_id() -> String {
+  unique_ts_id()
+}
+
+// Her çağrıda eşsiz bir ID üretir: milisaniye zaman damgası + process içi sayaç.
+// Aynı milisaniye içinde iki çağrı olsa bile sayaç farklılaştırır.
+// Atomik u64 — thread-safe, kilit gerektirmez.
+fn unique_ts_id() -> String {
+  use std::sync::atomic::{AtomicU64, Ordering};
   use std::time::{SystemTime, UNIX_EPOCH};
+
+  static SEQ: AtomicU64 = AtomicU64::new(0);
+
   let ms = SystemTime::now()
     .duration_since(UNIX_EPOCH)
     .unwrap_or_default()
-    .as_millis();
-  ms.to_string()
+    .as_millis() as u64;
+
+  // fetch_add her çağrıda bir artar; process yeniden başlayana kadar monoton.
+  let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+
+  // Örnek çıktı: "17123456789010003"  (13 basamak ms + 4 basamak seq)
+  format!("{}{:04}", ms, seq % 10_000)
 }
 #[derive(serde::Deserialize)]
 pub struct CreateTransferItemPayload {
@@ -3405,6 +3537,368 @@ pub fn undo_last_transfer() -> Result<UndoLastTransferResult, String> {
     restored_lines,
   })
 }
+// ==================== ANALİZ FONKSİYONLARI ====================
+
+#[derive(serde::Serialize)]
+pub struct VelocityRow {
+  pub barcode: String,
+  pub name: String,
+  pub color: Option<String>,
+  pub size: Option<String>,
+  pub category: Option<String>,
+  pub total_sold: i64,
+  pub daily_avg: f64,
+  pub current_stock: i64,
+  pub days_to_empty: Option<i64>,
+}
+
+/// Son `days` günde satışlara göre hız analizi.
+/// Sadece o dönemde en az 1 satış yapan aktif ürünler dahil edilir.
+pub fn get_velocity_report(days: i64) -> Result<Vec<VelocityRow>, String> {
+  let conn = get_conn()?;
+  let cutoff = format!("-{} days", days);
+  let days_f = days as f64;
+
+  let sql = "
+    SELECT
+      p.barcode,
+      p.name,
+      p.color,
+      p.size,
+      p.category,
+      COALESCE(SUM(s.qty), 0)                                              AS total_sold,
+      COALESCE(p.magaza_stok, 0) + COALESCE(p.depo_stok, 0)               AS current_stock
+    FROM products p
+    JOIN sales s ON s.product_barcode = p.barcode
+      AND COALESCE(s.voided, 0) = 0
+      AND s.sold_at >= datetime('now', ?1, 'localtime')
+    WHERE COALESCE(p.is_active, 1) = 1
+    GROUP BY p.barcode
+    ORDER BY total_sold DESC
+  ";
+
+  let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+  let rows = stmt
+    .query_map(params![&cutoff], |r| {
+      Ok((
+        r.get::<_, String>(0)?,
+        r.get::<_, String>(1)?,
+        r.get::<_, Option<String>>(2)?,
+        r.get::<_, Option<String>>(3)?,
+        r.get::<_, Option<String>>(4)?,
+        r.get::<_, i64>(5)?,
+        r.get::<_, i64>(6)?,
+      ))
+    })
+    .map_err(|e| e.to_string())?;
+
+  let mut result = Vec::new();
+  for row in rows {
+    let (barcode, name, color, size, category, total_sold, current_stock) =
+      row.map_err(|e| e.to_string())?;
+    let daily_avg = total_sold as f64 / days_f;
+    let days_to_empty = if daily_avg > 0.0 && current_stock > 0 {
+      Some((current_stock as f64 / daily_avg).ceil() as i64)
+    } else {
+      None
+    };
+    result.push(VelocityRow {
+      barcode,
+      name,
+      color,
+      size,
+      category,
+      total_sold,
+      daily_avg,
+      current_stock,
+      days_to_empty,
+    });
+  }
+  Ok(result)
+}
+
+#[derive(serde::Serialize)]
+pub struct DeadStockRow {
+  pub barcode: String,
+  pub name: String,
+  pub color: Option<String>,
+  pub size: Option<String>,
+  pub category: Option<String>,
+  pub stock: i64,
+  pub days_since_last_sale: i64,
+  pub last_sold_at: Option<String>,
+}
+
+/// Stoğu > 0 olan, `min_days` veya daha uzun süredir satış yapılmamış ürünler.
+/// `last_sold_at` NULL olanlarda created_at baz alınır.
+/// En uzun süredir satılmayan en üstte.
+pub fn get_dead_stock(min_days: i64) -> Result<Vec<DeadStockRow>, String> {
+  let conn = get_conn()?;
+
+  let sql = "
+    SELECT
+      p.barcode,
+      p.name,
+      p.color,
+      p.size,
+      p.category,
+      COALESCE(p.magaza_stok, 0) + COALESCE(p.depo_stok, 0)  AS stock,
+      MAX(s.sold_at)                                           AS last_sold_at,
+      CAST(
+        julianday('now', 'localtime') -
+        julianday(COALESCE(MAX(s.sold_at), p.created_at))
+        AS INTEGER
+      )                                                        AS days_since
+    FROM products p
+    LEFT JOIN sales s
+      ON s.product_barcode = p.barcode AND COALESCE(s.voided, 0) = 0
+    WHERE COALESCE(p.is_active, 1) = 1
+      AND (COALESCE(p.magaza_stok, 0) + COALESCE(p.depo_stok, 0)) > 0
+    GROUP BY p.barcode
+    HAVING days_since >= ?1
+    ORDER BY days_since DESC
+  ";
+
+  let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+  let rows = stmt
+    .query_map(params![min_days], |r| {
+      Ok((
+        r.get::<_, String>(0)?,
+        r.get::<_, String>(1)?,
+        r.get::<_, Option<String>>(2)?,
+        r.get::<_, Option<String>>(3)?,
+        r.get::<_, Option<String>>(4)?,
+        r.get::<_, i64>(5)?,
+        r.get::<_, Option<String>>(6)?,
+        r.get::<_, i64>(7)?,
+      ))
+    })
+    .map_err(|e| e.to_string())?;
+
+  let mut result = Vec::new();
+  for row in rows {
+    let (barcode, name, color, size, category, stock, last_sold_at, days_since_last_sale) =
+      row.map_err(|e| e.to_string())?;
+    result.push(DeadStockRow {
+      barcode,
+      name,
+      color,
+      size,
+      category,
+      stock,
+      days_since_last_sale,
+      last_sold_at,
+    });
+  }
+  Ok(result)
+}
+
+#[derive(serde::Serialize)]
+pub struct CategoryMarginRow {
+  pub category: String,
+  pub total_qty: i64,
+  pub revenue: f64,
+  pub cost: f64,
+  pub gross_profit: f64,
+  pub margin_pct: f64,
+  pub profit_share_pct: f64,
+}
+
+/// Son `days` günde kategori bazlı ciro, brüt kâr, marj %.
+/// Alış fiyatı 0/NULL olan ürünler sadece ciro tarafına girer, kâra dahil edilmez.
+pub fn get_category_margin(days: i64) -> Result<Vec<CategoryMarginRow>, String> {
+  let conn = get_conn()?;
+  let cutoff = format!("-{} days", days);
+
+  let sql = "
+    SELECT
+      COALESCE(p.category, 'Kategorisiz')             AS category,
+      SUM(s.qty)                                       AS total_qty,
+      SUM(s.qty * s.unit_price)                        AS revenue,
+      SUM(
+        CASE WHEN COALESCE(p.buy_price, 0) > 0
+          THEN s.qty * p.buy_price
+          ELSE 0
+        END
+      )                                                AS cost,
+      SUM(
+        CASE WHEN COALESCE(p.buy_price, 0) > 0
+          THEN s.qty * (s.unit_price - p.buy_price)
+          ELSE 0
+        END
+      )                                                AS gross_profit
+    FROM sales s
+    JOIN products p ON p.barcode = s.product_barcode
+    WHERE COALESCE(s.voided, 0) = 0
+      AND s.sold_at >= datetime('now', ?1, 'localtime')
+    GROUP BY category
+    ORDER BY gross_profit DESC
+  ";
+
+  let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+  let rows = stmt
+    .query_map(params![&cutoff], |r| {
+      Ok((
+        r.get::<_, String>(0)?,
+        r.get::<_, i64>(1)?,
+        r.get::<_, f64>(2)?,
+        r.get::<_, f64>(3)?,
+        r.get::<_, f64>(4)?,
+      ))
+    })
+    .map_err(|e| e.to_string())?;
+
+  let mut result: Vec<(String, i64, f64, f64, f64)> = Vec::new();
+  for row in rows {
+    result.push(row.map_err(|e| e.to_string())?);
+  }
+
+  // Toplam kâr: profit_share_pct hesabı için
+  let total_profit: f64 = result.iter().map(|r| r.4.max(0.0)).sum();
+
+  Ok(
+    result
+      .into_iter()
+      .map(|(category, total_qty, revenue, cost, gross_profit)| {
+        let margin_pct = if revenue > 0.0 {
+          (gross_profit / revenue * 100.0 * 10.0).round() / 10.0
+        } else {
+          0.0
+        };
+        let profit_share_pct = if total_profit > 0.0 {
+          (gross_profit.max(0.0) / total_profit * 100.0 * 10.0).round() / 10.0
+        } else {
+          0.0
+        };
+        CategoryMarginRow {
+          category,
+          total_qty,
+          revenue,
+          cost,
+          gross_profit,
+          margin_pct,
+          profit_share_pct,
+        }
+      })
+      .collect(),
+  )
+}
+
+#[derive(serde::Serialize)]
+pub struct BasketPairRow {
+  pub barcode_a: String,
+  pub barcode_b: String,
+  pub name_a: String,
+  pub name_b: String,
+  pub color_a: Option<String>,
+  pub color_b: Option<String>,
+  pub together_count: i64,
+}
+
+/// Aynı fişte (sale_group_id) birlikte satılan ürün çiftleri.
+pub fn get_basket_pairs(limit: i64) -> Result<Vec<BasketPairRow>, String> {
+  let conn = get_conn()?;
+
+  let sql = "
+    SELECT
+      a.product_barcode                AS barcode_a,
+      b.product_barcode                AS barcode_b,
+      pa.name                          AS name_a,
+      pb.name                          AS name_b,
+      pa.color                         AS color_a,
+      pb.color                         AS color_b,
+      COUNT(*)                         AS together_count
+    FROM sales a
+    JOIN sales b
+      ON  a.sale_group_id = b.sale_group_id
+      AND a.product_barcode < b.product_barcode
+      AND COALESCE(b.voided, 0) = 0
+    JOIN products pa ON pa.barcode = a.product_barcode
+    JOIN products pb ON pb.barcode = b.product_barcode
+    WHERE a.sale_group_id IS NOT NULL
+      AND COALESCE(a.voided, 0) = 0
+    GROUP BY a.product_barcode, b.product_barcode
+    ORDER BY together_count DESC
+    LIMIT ?1
+  ";
+
+  let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+  let rows = stmt
+    .query_map(params![limit], |r| {
+      Ok(BasketPairRow {
+        barcode_a:      r.get(0)?,
+        barcode_b:      r.get(1)?,
+        name_a:         r.get(2)?,
+        name_b:         r.get(3)?,
+        color_a:        r.get(4)?,
+        color_b:        r.get(5)?,
+        together_count: r.get(6)?,
+      })
+    })
+    .map_err(|e| e.to_string())?;
+
+  let mut result = Vec::new();
+  for row in rows {
+    result.push(row.map_err(|e| e.to_string())?);
+  }
+  Ok(result)
+}
+
+#[derive(serde::Serialize)]
+pub struct LowStockRow {
+  pub barcode: String,
+  pub name: String,
+  pub color: Option<String>,
+  pub size: Option<String>,
+  pub category: Option<String>,
+  pub magaza_stok: i64,
+  pub depo_stok: i64,
+  pub total_stock: i64,
+}
+
+/// Toplam stoğu `max_stock` veya altında olan aktif ürünler, en azdan en çoğa sıralı.
+pub fn get_low_stock(max_stock: i64) -> Result<Vec<LowStockRow>, String> {
+  let conn = get_conn()?;
+
+  let sql = "
+    SELECT
+      barcode,
+      name,
+      color,
+      size,
+      category,
+      COALESCE(magaza_stok, 0)                                        AS magaza_stok,
+      COALESCE(depo_stok, 0)                                          AS depo_stok,
+      COALESCE(magaza_stok, 0) + COALESCE(depo_stok, 0)              AS total_stock
+    FROM products
+    WHERE COALESCE(is_active, 1) = 1
+      AND (COALESCE(magaza_stok, 0) + COALESCE(depo_stok, 0)) <= ?1
+    ORDER BY total_stock ASC, name ASC
+  ";
+
+  let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+  let rows = stmt
+    .query_map(params![max_stock], |r| {
+      Ok(LowStockRow {
+        barcode:      r.get(0)?,
+        name:         r.get(1)?,
+        color:        r.get(2)?,
+        size:         r.get(3)?,
+        category:     r.get(4)?,
+        magaza_stok:  r.get(5)?,
+        depo_stok:    r.get(6)?,
+        total_stock:  r.get(7)?,
+      })
+    })
+    .map_err(|e| e.to_string())?;
+
+  let mut result = Vec::new();
+  for row in rows {
+    result.push(row.map_err(|e| e.to_string())?);
+  }
+  Ok(result)
+}
+
 fn ensure_returns_cascade_triggers(conn: &Connection) -> Result<(), String> {
   conn.execute_batch(
     r#"

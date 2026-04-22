@@ -122,6 +122,10 @@ pub fn restore_from_backup(app: &AppHandle, payload: RestoreFromBackupPayload) -
 
   fs::rename(&tmp_path, &db).map_err(|e| format!("Restore finalize hatası: {}", e))?;
 
+  // WAL ve SHM dosyalarını temizle (eski DB'den kalan)
+  let _ = fs::remove_file(db.with_extension("sqlite-wal"));
+  let _ = fs::remove_file(db.with_extension("sqlite-shm"));
+
   Ok(RestoreFromBackupResult {
     restored_db_path: db.to_string_lossy().to_string(),
     used_backup_path: canon_backup.to_string_lossy().to_string(),

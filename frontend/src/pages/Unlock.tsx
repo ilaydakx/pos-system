@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { setAuthed } from "../auth";
-
-const DEFAULT_PASSWORD = "1009"; 
+import { LS_PASSWORD, DEFAULT_PASSWORD } from "./Settings";
+import { C, R, page, input, btnPrimary, errBox } from "../lib/ds";
 
 export default function Unlock() {
   const nav = useNavigate();
@@ -20,7 +20,8 @@ export default function Unlock() {
     e.preventDefault();
     setErr("");
 
-    if (pw === DEFAULT_PASSWORD) {
+    const current = localStorage.getItem(LS_PASSWORD) ?? DEFAULT_PASSWORD;
+    if (pw === current) {
       setAuthed(true);
       nav(redirectTo, { replace: true });
       return;
@@ -30,36 +31,48 @@ export default function Unlock() {
   };
 
   return (
-    <div style={{ padding: 16, fontFamily: "system-ui", maxWidth: 420 }}>
-      <h2 style={{ marginTop: 0 }}>🔒 Şifre Gerekli</h2>
-      <div style={{ opacity: 0.7, marginBottom: 12 }}>
-        Bu sayfaya erişmek için şifre gir.
+    <div
+      style={{
+        ...page,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        minHeight: "100vh",
+      }}
+    >
+      <div
+        style={{
+          width: 360,
+          backgroundColor: C.canvas,
+          border: `1px solid ${C.border}`,
+          borderRadius: R.xl,
+          padding: "32px 28px",
+        }}
+      >
+        <div style={{ fontSize: 22, fontWeight: 700, color: C.ink, marginBottom: 4 }}>
+          Şifre Gerekli
+        </div>
+        <div style={{ fontSize: 14, color: C.ink3, marginBottom: 24 }}>
+          Bu sayfaya erişmek için şifre gir.
+        </div>
+
+        <form onSubmit={onSubmit} style={{ display: "grid", gap: 12 }}>
+          <input
+            type="password"
+            placeholder="Şifre"
+            value={pw}
+            onChange={(e) => setPw(e.target.value)}
+            style={input}
+            autoFocus
+          />
+
+          {err && <div style={errBox}>{err}</div>}
+
+          <button type="submit" style={btnPrimary}>
+            Giriş
+          </button>
+        </form>
       </div>
-
-      <form onSubmit={onSubmit}>
-        <input
-          type="password"
-          placeholder="Şifre"
-          value={pw}
-          onChange={(e) => setPw(e.target.value)}
-          style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
-          autoFocus
-        />
-        {err && <div style={{ color: "crimson", marginTop: 10 }}>{err}</div>}
-
-        <button
-          type="submit"
-          style={{
-            marginTop: 12,
-            padding: "10px 14px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            cursor: "pointer",
-          }}
-        >
-          Giriş
-        </button>
-      </form>
     </div>
   );
 }

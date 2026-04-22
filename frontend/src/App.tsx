@@ -1,48 +1,37 @@
 import React, { useEffect } from "react";
 import { Outlet, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { isAuthed, logout, startIdleWatch } from "./auth";
+import { C, R } from "./lib/ds";
 
 const navLinkStyle = ({ isActive }: { isActive: boolean }) => {
   const base: React.CSSProperties = {
     display: "flex",
     alignItems: "center",
-    gap: 10,
-    padding: "10px 12px",
-    borderRadius: 12,
+    gap: 8,
+    padding: "8px 12px",
+    borderRadius: R.md,
     textDecoration: "none",
-    fontWeight: 600,
-    color: "#1f2937",
+    fontSize: 14,
+    fontWeight: 500,
+    color: C.ink2,
     background: "transparent",
-    border: "1px solid transparent",
-    transition: "all 150ms ease",
+    transition: "all 120ms ease",
   };
 
   if (!isActive) return base;
 
   return {
     ...base,
-    background: "#111827",
+    background: C.ink,
     color: "#ffffff",
-    boxShadow: "0 6px 18px rgba(17,24,39,0.15)",
+    fontWeight: 600,
   };
 };
-
-const dotStyle = (active: boolean): React.CSSProperties => ({
-  width: 8,
-  height: 8,
-  borderRadius: 999,
-  background: active ? "#fff" : "rgba(17,24,39,0.25)",
-});
 
 function NavItem({ to, label, end }: { to: string; label: string; end?: boolean }) {
   return (
     <NavLink to={to} end={end} style={navLinkStyle}>
-      {({ isActive }) => (
-        <>
-          <span style={dotStyle(isActive)} />
-          <span>{label}</span>
-        </>
-      )}
+      {label}
     </NavLink>
   );
 }
@@ -67,38 +56,43 @@ export default function App() {
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "260px 1fr",
+        gridTemplateColumns: "212px minmax(0, 1fr)",
         minHeight: "100vh",
-        background: "#faf7f5",
-        fontFamily: "system-ui",
+        backgroundColor: C.bg,
+        fontFamily: "system-ui, -apple-system, sans-serif",
       }}
     >
       <aside
         style={{
-          background: "#ffffff",
-          borderRight: "1px solid rgba(17,24,39,0.08)",
-          padding: 16,
+          backgroundColor: C.canvas,
+          borderRight: `1px solid ${C.border}`,
+          padding: "16px 12px",
           display: "flex",
           flexDirection: "column",
-          gap: 12,
+          gap: 2,
+          position: "sticky",
+          top: 0,
+          height: "100vh",
+          overflowY: "auto",
+          boxSizing: "border-box",
         }}
       >
         {/* Logo */}
         <div
           style={{
-            fontWeight: 800,
-            fontSize: 20,
+            fontWeight: 700,
+            fontSize: 16,
+            letterSpacing: "0.04em",
             padding: "10px 12px",
-            borderRadius: 14,
-            background: "linear-gradient(135deg, #fde68a, #fbcfe8)",
-            color: "#111827",
-            marginBottom: 6,
+            color: C.ink,
+            marginBottom: 8,
+            borderBottom: `1px solid ${C.border}`,
           }}
         >
           CIEL POS
         </div>
 
-        <nav style={{ display: "grid", gap: 8 }}>
+        <nav style={{ display: "grid", gap: 2 }}>
           <NavItem to="/" label="Satış" end />
           <NavItem to="/stockcontrol" label="Stok Kontrol" />
           <NavItem to="/products" label="Ürünler" />
@@ -106,12 +100,13 @@ export default function App() {
           <NavItem to="/returns" label="İade / Değişim" />
           <NavItem to="/soldproducts" label="Satılan Ürünler" />
           <NavItem to="/dashboard" label="Dashboard" />
+          <NavItem to="/analytics" label="Analiz" />
           <NavItem to="/expenses" label="Gider" />
           <NavItem to="/barcode-print" label="Barkod Yazdır" />
           <NavItem to="/settings" label="Ayarlar" />
         </nav>
 
-        <div style={{ marginTop: "auto" }}>
+        <div style={{ marginTop: "auto", paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
           {isAuthed() ? (
             <button
               onClick={() => {
@@ -120,12 +115,15 @@ export default function App() {
               }}
               style={{
                 width: "100%",
-                padding: "10px 12px",
-                borderRadius: 12,
-                border: "1px solid rgba(17,24,39,0.15)",
-                background: "#fff",
-                fontWeight: 600,
+                padding: "8px 12px",
+                height: 36,
+                borderRadius: R.md,
+                border: `1px solid ${C.border}`,
+                backgroundColor: C.canvas,
+                fontWeight: 500,
+                fontSize: 13,
                 cursor: "pointer",
+                color: C.ink3,
               }}
             >
               Çıkış
@@ -135,12 +133,15 @@ export default function App() {
               onClick={() => nav("/unlock", { replace: true })}
               style={{
                 width: "100%",
-                padding: "10px 12px",
-                borderRadius: 12,
-                border: "1px solid rgba(17,24,39,0.15)",
-                background: "#fff",
-                fontWeight: 600,
+                padding: "8px 12px",
+                height: 36,
+                borderRadius: R.md,
+                border: `1px solid ${C.border}`,
+                backgroundColor: C.canvas,
+                fontWeight: 500,
+                fontSize: 13,
                 cursor: "pointer",
+                color: C.ink3,
               }}
             >
               Kilidi Aç
@@ -149,7 +150,7 @@ export default function App() {
         </div>
       </aside>
 
-      <main style={{ flex: 1, padding: 16, background: "#fbf6f3", minHeight: "100vh" }}>
+      <main style={{ backgroundColor: C.bg, minHeight: "100vh", minWidth: 0, overflowY: "auto" }}>
         <Outlet />
       </main>
     </div>

@@ -16,7 +16,7 @@ function toName(x: any): string {
   if (x == null) return "";
   if (typeof x === "string") return x.trim();
   if (typeof x === "object") {
-    
+
     if ("name" in x) return String((x as any).name ?? "").trim();
   }
   return String(x).trim();
@@ -67,9 +67,9 @@ export function ProductNew() {
   const isVariantMode = Boolean(variantOf) || mode === "variant" || mode === "variants";
 
 
- 
+
   // form alanları
-  const [productCode, setProductCode] = useState(""); 
+  const [productCode, setProductCode] = useState("");
 
   const [barcode, setBarcode] = useState("");
 
@@ -84,15 +84,21 @@ export function ProductNew() {
   const [warehouseStart, setWarehouseStart] = useState(""); // depo başlangıç
 
   const [category, setCategory] = useState("");
-  const [name, setName] = useState(""); 
+  const [name, setName] = useState("");
   const [color, setColor] = useState("");
-  const [buyPrice, setBuyPrice] = useState(""); 
-  const [sellPrice, setSellPrice] = useState(""); 
+  const [buyPrice, setBuyPrice] = useState("");
+  const [sellPrice, setSellPrice] = useState("");
 
   // dropdown data from DB
   const [categories, setCategories] = useState<string[]>([]);
   const [colors, setColors] = useState<string[]>([]);
   const [sizes, setSizes] = useState<string[]>([]);
+
+  // matrix mode
+  const [matrixMode, setMatrixMode] = useState(false);
+  const [matrixColors, setMatrixColors] = useState<string[]>([]);
+  const [matrixSizes, setMatrixSizes] = useState<string[]>([]);
+  const [matrixCells, setMatrixCells] = useState<Record<string, { magaza: string; depo: string }>>({});
 
   const PRODUCT_CODE_REGEX = /^[A-Z0-9]{3}-?\d{3}$/;
   const [result, setResult] = useState("");
@@ -154,6 +160,23 @@ export function ProductNew() {
   const updateLine = (idx: number, patch: Partial<VariantLine>) => {
     setVariantLines((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
   };
+
+  // Matrix helpers
+  const matrixKey = (c: string, s: string) => `${c}:::${s}`;
+
+  const toggleMatrixColor = (c: string) =>
+    setMatrixColors((prev) => (prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]));
+
+  const toggleMatrixSize = (s: string) =>
+    setMatrixSizes((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
+
+  const updateMatrixCell = (c: string, s: string, field: "magaza" | "depo", val: string) => {
+    const k = matrixKey(c, s);
+    setMatrixCells((prev) => ({ ...prev, [k]: { ...(prev[k] ?? { magaza: "", depo: "" }), [field]: val } }));
+  };
+
+  const getMatrixCell = (c: string, s: string) =>
+    matrixCells[matrixKey(c, s)] ?? { magaza: "", depo: "" };
 
   const canSave = (() => {
     const hasName = !!name.trim();
@@ -232,6 +255,26 @@ export function ProductNew() {
 
     // Kaydet aktif olsun: (singleValid veya rowsValid) + temel alanlar doğru olsun
     return hasName && hasSellPrice && codeOk && barcodeOk && (singleValid || rowsValid);
+  })();
+
+  const canSaveMatrix = (() => {
+    if (!matrixMode) return false;
+    const hasName = !!name.trim();
+    const spNum = Number(sellPrice);
+    const hasSellPrice = !!sellPrice.trim() && !Number.isNaN(spNum);
+    if (!hasName || !hasSellPrice) return false;
+    let hasAny = false;
+    for (const c of matrixColors) {
+      for (const s of matrixSizes) {
+        const cell = getMatrixCell(c, s);
+        const ms = cell.magaza.trim() === "" ? 0 : Number(cell.magaza);
+        const ds = cell.depo.trim() === "" ? 0 : Number(cell.depo);
+        if (!Number.isFinite(ms) || !Number.isInteger(ms) || ms < 0) return false;
+        if (!Number.isFinite(ds) || !Number.isInteger(ds) || ds < 0) return false;
+        if (ms + ds > 0) hasAny = true;
+      }
+    }
+    return hasAny;
   })();
 
   const handleSave = async () => {
@@ -421,6 +464,76 @@ export function ProductNew() {
     }
   };
 
+  const handleSaveMatrix = async () => {
+    try {
+      setResult("");
+      if (!name.trim()) { setResult("❌ Ürün adı zorunlu"); return; }
+      if (productCode.trim() && !PRODUCT_CODE_REGEX.test(productCode.trim())) {
+        setResult("❌ Ürün kodu formatı geçersiz (örn: SWT-001)"); return;
+      }
+      const spNum = Number(sellPrice);
+      if (!sellPrice.trim() || Number.isNaN(spNum)) {
+        setResult("❌ Satış fiyatı zorunlu ve sayı olmalı"); return;
+      }
+      const bp = buyPrice.trim() === "" ? null : Number(buyPrice.trim());
+      if (bp !== null && Number.isNaN(bp)) { setResult("❌ Alış fiyatı sayı olmalı"); return; }
+
+      const toCreate: Array<{ color: string; size: string; ms: number; ds: number }> = [];
+      for (const c of matrixColors) {
+        for (const s of matrixSizes) {
+          const cell = getMatrixCell(c, s);
+          const ms = cell.magaza.trim() === "" ? 0 : Number(cell.magaza);
+          const ds = cell.depo.trim() === "" ? 0 : Number(cell.depo);
+          if (ms + ds <= 0) continue;
+          if (!Number.isFinite(ms) || !Number.isInteger(ms) || ms < 0) {
+            setResult(`❌ ${c} / ${s}: Mağaza stok geçersiz`); return;
+          }
+          if (!Number.isFinite(ds) || !Number.isInteger(ds) || ds < 0) {
+            setResult(`❌ ${c} / ${s}: Depo stok geçersiz`); return;
+          }
+          toCreate.push({ color: c, size: s, ms, ds });
+        }
+      }
+
+      if (toCreate.length === 0) { setResult("❌ En az bir hücreye stok girmelisin"); return; }
+
+      setResult("Ekleniyor...");
+
+      let familyCode = productCode.trim()
+        ? productCode.trim().toUpperCase().replaceAll("-", "")
+        : "";
+
+      let createdCount = 0;
+      for (const item of toCreate) {
+        const res = await invoke<CreatedProductDto>("add_product", {
+          payload: {
+            barcode: null,
+            product_code: familyCode ? familyCode : null,
+            category: category.trim() ? category.trim() : null,
+            name: name.trim(),
+            color: item.color,
+            size: item.size,
+            buy_price: bp,
+            sell_price: spNum,
+            stock: item.ms + item.ds,
+            magaza_baslangic: item.ms,
+            depo_baslangic: item.ds,
+          },
+        });
+        createdCount += 1;
+        if (!familyCode) {
+          const pc = (res?.product_code ?? "").toString().trim();
+          if (pc) familyCode = pc.toUpperCase().replaceAll("-", "");
+        }
+      }
+
+      setResult(`✅ ${createdCount} ürün eklendi`);
+      setTimeout(() => nav("/products"), 300);
+    } catch (e) {
+      setResult(`❌ ${String(e)}`);
+    }
+  };
+
   const inputStyle: React.CSSProperties = {
     padding: "10px 14px",
     borderRadius: 10,
@@ -439,6 +552,17 @@ export function ProductNew() {
 
   const rowStyle: React.CSSProperties = { display: "flex", gap: 10 };
 
+  const pillStyle = (active: boolean): React.CSSProperties => ({
+    padding: "5px 14px",
+    borderRadius: 20,
+    border: active ? "2px solid #111827" : "1px solid #d1d5db",
+    background: active ? "#111827" : "#fff",
+    color: active ? "#fff" : "#374151",
+    cursor: "pointer",
+    fontSize: 13,
+    fontWeight: 600,
+  });
+
   return (
     <>
       <div style={{ padding: 16, fontFamily: "system-ui" }}>
@@ -449,7 +573,37 @@ export function ProductNew() {
           </div>
         </div>
 
-        <div style={{ marginTop: 16, display: "grid", gap: 10, maxWidth: 560 }}>
+        <div style={{ marginTop: 16, display: "grid", gap: 10, maxWidth: matrixMode ? 900 : 560 }}>
+          {/* Mode toggle: only in normal (non-variant) mode */}
+          {!isVariantMode && (
+            <div style={{ display: "flex", borderRadius: 10, border: "1px solid #e5e7eb", overflow: "hidden" }}>
+              <button
+                type="button"
+                onClick={() => setMatrixMode(false)}
+                style={{
+                  flex: 1, padding: "10px 0", border: "none", cursor: "pointer",
+                  background: !matrixMode ? "#111827" : "#fff",
+                  color: !matrixMode ? "#fff" : "#111827",
+                  fontWeight: 600, fontSize: 13,
+                }}
+              >
+                Tekli
+              </button>
+              <button
+                type="button"
+                onClick={() => setMatrixMode(true)}
+                style={{
+                  flex: 1, padding: "10px 0", border: "none", cursor: "pointer",
+                  background: matrixMode ? "#111827" : "#fff",
+                  color: matrixMode ? "#fff" : "#111827",
+                  fontWeight: 600, fontSize: 13,
+                }}
+              >
+                Renk × Beden Matrisi
+              </button>
+            </div>
+          )}
+
           {/* Product code input: only show in normal mode */}
           {!isVariantMode && (
             <input
@@ -485,34 +639,6 @@ export function ProductNew() {
             onChange={(e) => setName(e.target.value)}
           />
 
-          <div style={rowStyle}>
-            <select
-              style={{ ...selectStyle, flex: 1 }}
-              value={color}
-              onChange={(e) => setColor(e.target.value)}
-            >
-              <option value="">Renk seç</option>
-              {colors.map((c) => (
-                <option key={`color:${c}`} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-
-            <select
-              style={{ ...selectStyle, flex: 1 }}
-              value={size}
-              onChange={(e) => setSize(e.target.value)}
-            >
-              <option value="">Beden seç</option>
-              {sizes.map((s) => (
-                <option key={`size:${s}`} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </div>
-
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <input
               style={inputStyle}
@@ -530,107 +656,294 @@ export function ProductNew() {
             />
           </div>
 
-          <div style={rowStyle}>
-            <input
-              style={{ ...inputStyle, flex: 1 }}
-              placeholder="Mağaza başlangıç stok (adet)"
-              value={storeStart}
-              onChange={(e) => setStoreStart(e.target.value)}
-              inputMode="numeric"
-            />
-            <input
-              style={{ ...inputStyle, flex: 1 }}
-              placeholder="Depo başlangıç stok (adet)"
-              value={warehouseStart}
-              onChange={(e) => setWarehouseStart(e.target.value)}
-              inputMode="numeric"
-            />
-          </div>
+          {/* ── TEKLİ MOD ── */}
+          {!matrixMode && (
+            <>
+              <div style={rowStyle}>
+                <select
+                  style={{ ...selectStyle, flex: 1 }}
+                  value={color}
+                  onChange={(e) => setColor(e.target.value)}
+                >
+                  <option value="">Renk seç</option>
+                  {colors.map((c) => (
+                    <option key={`color:${c}`} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
 
-          <div style={{ ...inputStyle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ opacity: 0.8 }}>Toplam stok (başlangıç)</div>
-            <div style={{ fontWeight: 700 }}>
-              {(
-                (storeStart.trim() === "" ? 0 : Number(storeStart)) +
-                (warehouseStart.trim() === "" ? 0 : Number(warehouseStart))
-              ) || 0}
-            </div>
-          </div>
-
-        
-
-          {/* Kaydet üstü: Satır ekle (Beden + Mağaza + Depo). Satır varsa tekli beden + tekli stok alanları kayıtta ignore edilir. */}
-          <div style={{ display: "grid", gap: 10, marginTop: 6 }}>
-            <button
-              type="button"
-              onClick={addLine}
-              style={{ padding: "10px 12px", borderRadius: 10 }}
-            >
-              + Satır ekle
-            </button>
-
-            {variantLines.length > 0 && (
-              <div style={{ display: "grid", gap: 8 }}>
-                {variantLines.map((r, idx) => (
-                  <div key={idx} style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                    <select
-                      style={{ ...selectStyle, flex: 1 }}
-                      value={r.size}
-                      onChange={(e) => updateLine(idx, { size: e.target.value })}
-                    >
-                      <option value="">Beden seç</option>
-                      {sizes.map((s) => (
-                        <option key={`row:${idx}:${s}`} value={s}>
-                          {s}
-                        </option>
-                      ))}
-                    </select>
-
-                    <input
-                      style={{ ...inputStyle, width: 160 }}
-                      placeholder="Mağaza"
-                      value={r.magaza}
-                      onChange={(e) => updateLine(idx, { magaza: e.target.value })}
-                      inputMode="numeric"
-                    />
-
-                    <input
-                      style={{ ...inputStyle, width: 160 }}
-                      placeholder="Depo"
-                      value={r.depo}
-                      onChange={(e) => updateLine(idx, { depo: e.target.value })}
-                      inputMode="numeric"
-                    />
-
-                    <button
-                      type="button"
-                      onClick={() => removeLine(idx)}
-                      style={{ padding: "10px 12px", borderRadius: 10 }}
-                      title="Satırı sil"
-                    >
-                      –
-                    </button>
-                  </div>
-                ))}
+                <select
+                  style={{ ...selectStyle, flex: 1 }}
+                  value={size}
+                  onChange={(e) => setSize(e.target.value)}
+                >
+                  <option value="">Beden seç</option>
+                  {sizes.map((s) => (
+                    <option key={`size:${s}`} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
               </div>
-            )}
-          </div>
 
-          <button
-            onClick={handleSave}
-            disabled={!canSave}
-            style={{
-              marginTop: 6,
-              padding: "12px 14px",
-              borderRadius: 12,
-              border: "0",
-              cursor: canSave ? "pointer" : "not-allowed",
-              opacity: canSave ? 1 : 0.5,
-              fontWeight: 600,
-            }}
-          >
-            Kaydet
-          </button>
+              <div style={rowStyle}>
+                <input
+                  style={{ ...inputStyle, flex: 1 }}
+                  placeholder="Mağaza başlangıç stok (adet)"
+                  value={storeStart}
+                  onChange={(e) => setStoreStart(e.target.value)}
+                  inputMode="numeric"
+                />
+                <input
+                  style={{ ...inputStyle, flex: 1 }}
+                  placeholder="Depo başlangıç stok (adet)"
+                  value={warehouseStart}
+                  onChange={(e) => setWarehouseStart(e.target.value)}
+                  inputMode="numeric"
+                />
+              </div>
+
+              <div style={{ ...inputStyle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ opacity: 0.8 }}>Toplam stok (başlangıç)</div>
+                <div style={{ fontWeight: 700 }}>
+                  {(
+                    (storeStart.trim() === "" ? 0 : Number(storeStart)) +
+                    (warehouseStart.trim() === "" ? 0 : Number(warehouseStart))
+                  ) || 0}
+                </div>
+              </div>
+
+              {/* Kaydet — satır ekle'nin ÜSTÜNDE */}
+              <button
+                onClick={handleSave}
+                disabled={!canSave}
+                style={{
+                  marginTop: 6,
+                  padding: "12px 14px",
+                  borderRadius: 12,
+                  border: "1px solid #a8d5b5",
+                  background: canSave ? "#d4edda" : "#f0f0f0",
+                  color: canSave ? "#1a5c30" : "#999",
+                  cursor: canSave ? "pointer" : "not-allowed",
+                  fontWeight: 700,
+                  fontSize: 15,
+                }}
+              >
+                Kaydet
+              </button>
+
+              {/* Satır ekle (Beden + Mağaza + Depo). Satır varsa tekli beden + tekli stok alanları kayıtta ignore edilir. */}
+              <div style={{ display: "grid", gap: 10, marginTop: 2 }}>
+                <button
+                  type="button"
+                  onClick={addLine}
+                  style={{ padding: "10px 12px", borderRadius: 10 }}
+                >
+                  + Satır ekle
+                </button>
+
+                {variantLines.length > 0 && (
+                  <div style={{ display: "grid", gap: 8 }}>
+                    {variantLines.map((r, idx) => (
+                      <div key={idx} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                        <select
+                          style={{ ...selectStyle, flex: 1 }}
+                          value={r.size}
+                          onChange={(e) => updateLine(idx, { size: e.target.value })}
+                        >
+                          <option value="">Beden seç</option>
+                          {sizes.map((s) => (
+                            <option key={`row:${idx}:${s}`} value={s}>
+                              {s}
+                            </option>
+                          ))}
+                        </select>
+
+                        <input
+                          style={{ ...inputStyle, width: 160 }}
+                          placeholder="Mağaza"
+                          value={r.magaza}
+                          onChange={(e) => updateLine(idx, { magaza: e.target.value })}
+                          inputMode="numeric"
+                        />
+
+                        <input
+                          style={{ ...inputStyle, width: 160 }}
+                          placeholder="Depo"
+                          value={r.depo}
+                          onChange={(e) => updateLine(idx, { depo: e.target.value })}
+                          inputMode="numeric"
+                        />
+
+                        <button
+                          type="button"
+                          onClick={() => removeLine(idx)}
+                          style={{ padding: "10px 12px", borderRadius: 10 }}
+                          title="Satırı sil"
+                        >
+                          –
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* ── MATRİS MOD ── */}
+          {matrixMode && (
+            <>
+              {/* Color pills */}
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Renkler</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {colors.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => toggleMatrixColor(c)}
+                      style={pillStyle(matrixColors.includes(c))}
+                    >
+                      {c}
+                    </button>
+                  ))}
+                  {colors.length === 0 && (
+                    <div style={{ opacity: 0.5, fontSize: 12 }}>Renk listesi boş (Ayarlar &gt; Renkler)</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Size pills */}
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Bedenler</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {sizes.map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => toggleMatrixSize(s)}
+                      style={pillStyle(matrixSizes.includes(s))}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                  {sizes.length === 0 && (
+                    <div style={{ opacity: 0.5, fontSize: 12 }}>Beden listesi boş (Ayarlar &gt; Bedenler)</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Matrix grid */}
+              {matrixColors.length > 0 && matrixSizes.length > 0 && (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr>
+                        <th style={{
+                          padding: "6px 12px", textAlign: "left",
+                          borderBottom: "2px solid #e5e7eb", minWidth: 100,
+                          color: "#6b7280", fontWeight: 600,
+                        }}>
+                          Renk / Beden
+                        </th>
+                        {matrixSizes.map((s) => (
+                          <th key={s} style={{
+                            padding: "6px 8px", textAlign: "center",
+                            borderBottom: "2px solid #e5e7eb", minWidth: 84,
+                            fontWeight: 700,
+                          }}>
+                            {s}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {matrixColors.map((c, ci) => (
+                        <tr key={c} style={{ background: ci % 2 === 0 ? "#fff" : "#f9fafb" }}>
+                          <td style={{
+                            padding: "6px 12px", fontWeight: 600,
+                            borderRight: "1px solid #e5e7eb", whiteSpace: "nowrap",
+                          }}>
+                            {c}
+                          </td>
+                          {matrixSizes.map((s) => {
+                            const cell = getMatrixCell(c, s);
+                            const ms = cell.magaza.trim() === "" ? 0 : Number(cell.magaza);
+                            const ds = cell.depo.trim() === "" ? 0 : Number(cell.depo);
+                            const hasStock = ms + ds > 0;
+                            return (
+                              <td key={s} style={{ padding: 4, textAlign: "center" }}>
+                                <div style={{ display: "grid", gap: 3 }}>
+                                  <input
+                                    placeholder="M"
+                                    inputMode="numeric"
+                                    value={cell.magaza}
+                                    onChange={(e) => updateMatrixCell(c, s, "magaza", e.target.value)}
+                                    style={{
+                                      width: 72, height: 30, padding: "2px 6px",
+                                      borderRadius: 6,
+                                      border: hasStock ? "1px solid #111827" : "1px solid #d1d5db",
+                                      fontSize: 13, textAlign: "center",
+                                      boxSizing: "border-box", outline: "none",
+                                    }}
+                                  />
+                                  <input
+                                    placeholder="D"
+                                    inputMode="numeric"
+                                    value={cell.depo}
+                                    onChange={(e) => updateMatrixCell(c, s, "depo", e.target.value)}
+                                    style={{
+                                      width: 72, height: 30, padding: "2px 6px",
+                                      borderRadius: 6,
+                                      border: hasStock ? "1px solid #111827" : "1px solid #d1d5db",
+                                      fontSize: 13, textAlign: "center",
+                                      boxSizing: "border-box", outline: "none",
+                                    }}
+                                  />
+                                </div>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div style={{ marginTop: 6, fontSize: 12, opacity: 0.6 }}>
+                    M = Mağaza stok &nbsp;·&nbsp; D = Depo stok &nbsp;·&nbsp; Boş bırakılan hücreler oluşturulmaz.
+                  </div>
+                </div>
+              )}
+
+              {matrixColors.length === 0 && (
+                <div style={{ fontSize: 13, opacity: 0.6, padding: "8px 0" }}>
+                  Yukarıdan en az bir renk seç.
+                </div>
+              )}
+              {matrixColors.length > 0 && matrixSizes.length === 0 && (
+                <div style={{ fontSize: 13, opacity: 0.6, padding: "8px 0" }}>
+                  Yukarıdan en az bir beden seç.
+                </div>
+              )}
+
+              <button
+                onClick={handleSaveMatrix}
+                disabled={!canSaveMatrix}
+                style={{
+                  marginTop: 6,
+                  padding: "12px 14px",
+                  borderRadius: 12,
+                  border: "0",
+                  cursor: canSaveMatrix ? "pointer" : "not-allowed",
+                  opacity: canSaveMatrix ? 1 : 0.5,
+                  fontWeight: 600,
+                }}
+              >
+                Kaydet
+              </button>
+            </>
+          )}
 
           {result && <div style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>{result}</div>}
         </div>

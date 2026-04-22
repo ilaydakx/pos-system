@@ -5,6 +5,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 const LS_LAST_BACKUP_PATH = "cielpos_last_backup_path";
 const LS_LAST_BACKUP_AT = "cielpos_last_backup_at";
+export const LS_PASSWORD = "cielpos_password";
+export const DEFAULT_PASSWORD = "1009";
 
 type DictItemDto = {
   id: number;
@@ -42,11 +44,6 @@ function dirOf(p: string): string {
 }
 type RestoreFromBackupPayload = {
   backup_path: string;
-  products: boolean;
-  sales: boolean;
-  returns: boolean;
-  transfers: boolean;
-  expenses: boolean;
 };
 type RestoreFromBackupResult = {
   restored_db_path: string;
@@ -60,11 +57,10 @@ const styles = {
   brand: { fontSize: 12, opacity: 0.65 },
   grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
   card: {
-    border: "1px solid rgba(17,24,39,0.08)",
-    borderRadius: 16,
+    border: "1px solid #EAE8E5",
+    borderRadius: 14,
     padding: 16,
     background: "white",
-    boxShadow: "0 6px 18px rgba(0,0,0,0.04)",
   },
   cardTitle: { fontWeight: 800, margin: 0, marginBottom: 10 },
   subText: { fontSize: 13, opacity: 0.75, lineHeight: 1.5 },
@@ -165,11 +161,6 @@ export default function Settings() {
   const [backupDir, setBackupDir] = useState<string>("");
   const [err, setErr] = useState<string>("");
   const [backupFile, setBackupFile] = useState<string>("");
-  const [products, setProducts] = useState(true);
-  const [sales, setSales] = useState(true);
-  const [returns, setReturns] = useState(true);
-  const [transfers, setTransfers] = useState(true);
-  const [expenses, setExpenses] = useState(true);
   const [restoring, setRestoring] = useState(false);
   const [restoreMsg, setRestoreMsg] = useState("");
 
@@ -189,6 +180,32 @@ export default function Settings() {
   const [newCat, setNewCat] = useState("");
   const [newColor, setNewColor] = useState("");
   const [newSize, setNewSize] = useState("");
+
+  // Şifre değiştir
+  const [pwCurrent, setPwCurrent] = useState("");
+  const [pwNew, setPwNew] = useState("");
+  const [pwNew2, setPwNew2] = useState("");
+  const [pwMsg, setPwMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
+  const doChangePassword = () => {
+    const current = localStorage.getItem(LS_PASSWORD) ?? DEFAULT_PASSWORD;
+    if (pwCurrent !== current) {
+      setPwMsg({ text: "Mevcut şifre yanlış.", ok: false });
+      return;
+    }
+    if (pwNew.length < 4) {
+      setPwMsg({ text: "Yeni şifre en az 4 karakter olmalı.", ok: false });
+      return;
+    }
+    if (pwNew !== pwNew2) {
+      setPwMsg({ text: "Yeni şifreler eşleşmiyor.", ok: false });
+      return;
+    }
+    localStorage.setItem(LS_PASSWORD, pwNew);
+    setPwCurrent(""); setPwNew(""); setPwNew2("");
+    setPwMsg({ text: "Şifre güncellendi.", ok: true });
+    setTimeout(() => setPwMsg(null), 3000);
+  };
 
   useEffect(() => {
     setLastPath(localStorage.getItem(LS_LAST_BACKUP_PATH) || "");
@@ -372,10 +389,7 @@ export default function Settings() {
     }
   };
 
-  const canRestore = useMemo(() => {
-    if (!backupFile) return false;
-    return products || sales || returns || transfers || expenses;
-  }, [backupFile, products, sales, returns, transfers, expenses]);
+  const canRestore = !!backupFile;
 
   async function pickBackup() {
     setRestoreMsg("");
@@ -400,11 +414,6 @@ export default function Settings() {
     try {
       const payload: RestoreFromBackupPayload = {
         backup_path: backupFile,
-        products,
-        sales,
-        returns,
-        transfers,
-        expenses,
       };
 
       const res = await invoke<RestoreFromBackupResult>("restore_from_backup", { payload });
@@ -513,7 +522,7 @@ export default function Settings() {
 
         <div style={styles.grid2}>
           {/* Categories */}
-          <div style={{ ...styles.card, boxShadow: "none" }}>
+          <div style={styles.card}>
             <h5 style={styles.miniTitle}>Kategoriler</h5>
 
             <div style={{ ...styles.row, marginTop: 10 }}>
@@ -539,7 +548,7 @@ export default function Settings() {
           </div>
 
           {/* Colors */}
-          <div style={{ ...styles.card, boxShadow: "none" }}>
+          <div style={styles.card}>
             <h5 style={styles.miniTitle}>Renkler</h5>
 
             <div style={{ ...styles.row, marginTop: 10 }}>
@@ -565,7 +574,7 @@ export default function Settings() {
           </div>
 
           {/* Sizes */}
-          <div style={{ ...styles.card, boxShadow: "none" }}>
+          <div style={styles.card}>
             <h5 style={styles.miniTitle}>Bedenler</h5>
 
             <div style={{ ...styles.row, marginTop: 10 }}>
@@ -591,7 +600,7 @@ export default function Settings() {
           </div>
 
           {/* Düzenle */}
-          <div style={{ ...styles.card, boxShadow: "none" }}>
+          <div style={styles.card}>
             <h5 style={styles.miniTitle}>Düzenle</h5>
             <div style={styles.helper}>Kategori / Renk / Beden değerlerini yeniden adlandırabilir veya pasife alabilirsin.</div>
 
@@ -632,8 +641,8 @@ export default function Settings() {
                 maxWidth: "96vw",
                 background: "white",
                 borderRadius: 16,
-                border: "1px solid rgba(17,24,39,0.10)",
-                boxShadow: "0 18px 60px rgba(0,0,0,0.18)",
+                border: "1px solid #EAE8E5",
+                boxShadow: "0 20px 60px rgba(0,0,0,0.15)",
               }}
               onClick={(e) => e.stopPropagation()}
             >
@@ -683,31 +692,8 @@ export default function Settings() {
           <div style={{ fontSize: 12, opacity: 0.85, wordBreak: "break-all" }}>{backupFile ? backupFile : "Henüz seçilmedi"}</div>
         </div>
 
-        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
-          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input type="checkbox" checked={products} onChange={(e) => setProducts(e.target.checked)} />
-            Ürünler
-          </label>
-
-          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input type="checkbox" checked={sales} onChange={(e) => setSales(e.target.checked)} />
-            Satışlar
-          </label>
-
-          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input type="checkbox" checked={returns} onChange={(e) => setReturns(e.target.checked)} />
-            İade / Değişim
-          </label>
-
-          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input type="checkbox" checked={transfers} onChange={(e) => setTransfers(e.target.checked)} />
-            Transferler
-          </label>
-
-          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input type="checkbox" checked={expenses} onChange={(e) => setExpenses(e.target.checked)} />
-            Giderler
-          </label>
+        <div style={{ marginTop: 12, fontSize: 13, opacity: 0.75 }}>
+          Seçilen yedek dosyasındaki tüm veriler mevcut veritabanının üzerine yazılır.
         </div>
 
         <div style={{ marginTop: 12, ...styles.row }}>
@@ -715,6 +701,48 @@ export default function Settings() {
             {restoring ? "Geri yükleniyor..." : "Geri Yükle"}
           </button>
           {restoreMsg && <div style={{ fontSize: 13 }}>{restoreMsg}</div>}
+        </div>
+      </div>
+
+      {/* Şifre Değiştir */}
+      <div style={{ ...styles.card, marginTop: 14 }}>
+        <h4 style={styles.cardTitle}>🔒 Şifre Değiştir</h4>
+        <div style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
+          Dashboard ve Gider sayfalarına erişim şifresi.
+        </div>
+        <div style={{ display: "grid", gap: 10, maxWidth: 360 }}>
+          <input
+            type="password"
+            placeholder="Mevcut şifre"
+            value={pwCurrent}
+            onChange={(e) => setPwCurrent(e.target.value)}
+            style={styles.input}
+          />
+          <input
+            type="password"
+            placeholder="Yeni şifre (min. 4 karakter)"
+            value={pwNew}
+            onChange={(e) => setPwNew(e.target.value)}
+            style={styles.input}
+          />
+          <input
+            type="password"
+            placeholder="Yeni şifre (tekrar)"
+            value={pwNew2}
+            onChange={(e) => setPwNew2(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && doChangePassword()}
+            style={styles.input}
+          />
+          <div style={styles.row}>
+            <button onClick={doChangePassword} style={styles.btnPrimary(true) as React.CSSProperties}>
+              Şifreyi Güncelle
+            </button>
+            {pwMsg && (
+              <div style={{ fontSize: 13, color: pwMsg.ok ? "#059669" : "#b91c1c", fontWeight: 700 }}>
+                {pwMsg.text}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

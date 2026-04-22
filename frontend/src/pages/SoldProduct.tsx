@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { C, R, page as dsPage, card, btnPrimary, btnSecondary, input, select as dsSelect, th as dsTh, thRight as dsThRight, td as dsTd, tdRight as dsTdRight, badgeRose, badgeAmber } from "../lib/ds";
 
 type SaleGroupRow = {
   sale_group_id: string;
@@ -41,8 +42,7 @@ export function SoldProducts() {
   const kindOf = (l: SaleLineRow): "EXCHANGE" | "RETURN" | null => {
     const k = (l as any).refund_kind;
     if (k === "EXCHANGE") return "EXCHANGE";
-    if (k === "RETURN") return "RETURN";
-    // fallback: if backend doesn't send kind yet
+    if (k === "RETURN" || k === "REFUND") return "RETURN";
     return null;
   };
 
@@ -164,54 +164,55 @@ export function SoldProducts() {
   const filteredGroups = useMemo(() => groups, [groups]);
 
   return (
-    <div style={{ padding: 16, fontFamily: "system-ui" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <h2 style={{ margin: 0 }}>Satılan Ürünler</h2>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <button onClick={loadGroups} disabled={loading}>
+    <div style={dsPage}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.ink }}>Satılan Ürünler</h2>
+        <div style={{ marginLeft: "auto" }}>
+          <button onClick={loadGroups} disabled={loading} style={btnSecondary}>
             Yenile
           </button>
         </div>
       </div>
 
-      <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          Son
-          <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
-            <option value={7}>7 gün</option>
-            <option value={15}>15 gün</option>
-            <option value={30}>30 gün</option>
-            <option value={90}>90 gün</option>
-          </select>
-        </label>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        <select
+          value={days}
+          onChange={(e) => setDays(Number(e.target.value))}
+          style={{ ...dsSelect, width: 120 }}
+        >
+          <option value={7}>Son 7 gün</option>
+          <option value={15}>Son 15 gün</option>
+          <option value={30}>Son 30 gün</option>
+          <option value={90}>Son 90 gün</option>
+        </select>
 
         <input
           placeholder="Ara: barkod / ürün adı"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          style={{ flex: 1, minWidth: 240, padding: 8 }}
+          style={{ ...input, flex: 1, minWidth: 200 }}
         />
 
-        <button onClick={() => loadGroups()} disabled={loading}>
+        <button onClick={() => loadGroups()} disabled={loading} style={btnPrimary}>
           Ara
         </button>
       </div>
 
       {err && (
-        <div style={{ marginTop: 12, color: "crimson", whiteSpace: "pre-wrap" }}>
-          ❌ {err}
+        <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: R.md, backgroundColor: C.roseBg, color: C.rose, fontSize: 13 }}>
+          {err}
         </div>
       )}
 
       {loading ? (
-        <div style={{ marginTop: 16 }}>Yükleniyor...</div>
+        <div style={{ padding: "32px 0", textAlign: "center", color: C.ink4, fontSize: 14 }}>Yükleniyor...</div>
       ) : (
-        <div style={{ marginTop: 16, overflow: "auto" }}>
+        <div style={{ ...card, overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
             <thead>
               <tr>
                 {["Tarih", "Fiş No", "Adet", "Toplam Tutar", "Detay"].map((h) => (
-                  <th key={h} style={th}>
+                  <th key={h} style={dsTh}>
                     {h}
                   </th>
                 ))}
@@ -227,57 +228,42 @@ export function SoldProducts() {
                         const ls = lines[g.sale_group_id] ?? [];
                         const k = groupRefundKind(ls);
                         if (k === "NONE") return undefined;
-                        // light red tint for any refund/exchange
-                        return { background: "#fff1f1" };
+                        return { backgroundColor: C.roseBg };
                       })()}
                     >
-                      <td style={td}>{g.sold_at}</td>
-                      <td style={tdStrong}>
+                      <td style={dsTd}>{g.sold_at}</td>
+                      <td style={{ ...dsTd, fontWeight: 600 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <span>{g.sale_group_id}</span>
                           {(() => {
                             const ls = lines[g.sale_group_id] ?? [];
                             const k = groupRefundKind(ls);
                             if (k === "NONE") return null;
-                            const label = k === "EXCHANGE" ? "Değişim" : k === "RETURN" ? "İade" : "İade";
-                            return (
-                              <span
-                                style={{
-                                  display: "inline-block",
-                                  padding: "2px 8px",
-                                  borderRadius: 999,
-                                  background: "#ffe3e3",
-                                  border: "1px solid #ffb3b3",
-                                  fontSize: 12,
-                                  fontWeight: 700,
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {label}
-                              </span>
-                            );
+                            const label = k === "EXCHANGE" ? "Değişim" : "İade";
+                            return <span style={badgeRose}>{label}</span>;
                           })()}
                         </div>
                       </td>
-                      <td style={td}>
+                      <td style={dsTd}>
                         {typeof g.qty === "number" && g.qty > 0
                           ? g.qty
                           : (lines[g.sale_group_id]?.reduce((a, x) => a + (x.qty ?? 0), 0) ?? 0)}
                       </td>
-                      <td style={td}>
+                      <td style={dsTd}>
                         {fmtMoney(
                           typeof g.total === "number" && g.total !== 0
                             ? g.total
                             : (lines[g.sale_group_id]?.reduce((a, x) => a + (x.total ?? 0), 0) ?? 0)
                         )}
                       </td>
-                      <td style={td}>
+                      <td style={dsTd}>
                         <button
                           onClick={async () => {
                             const next = isOpen ? "" : g.sale_group_id;
                             setOpenGroup(next);
                             if (!isOpen) await loadLines(g.sale_group_id);
                           }}
+                          style={{ ...btnSecondary, height: 32, padding: "0 12px", fontSize: 13 }}
                         >
                           {isOpen ? "Kapat" : "Aç"}
                         </button>
@@ -286,15 +272,15 @@ export function SoldProducts() {
 
                     {isOpen && (
                       <tr>
-                        <td colSpan={5} style={{ padding: 12, background: "#fafafa" }}>
-                          <div style={{ fontWeight: 600, marginBottom: 8 }}>Fiş Detayı</div>
+                        <td colSpan={5} style={{ padding: "12px 16px", backgroundColor: C.subtle }}>
+                          <div style={{ fontWeight: 600, fontSize: 13, color: C.ink2, marginBottom: 10 }}>Fiş Detayı</div>
 
-                          <div style={{ overflow: "auto" }}>
+                          <div style={{ overflow: "auto", borderRadius: R.md, border: `1px solid ${C.border}`, backgroundColor: C.canvas }}>
                             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
                               <thead>
                                 <tr>
                                   {["Barkod", "Ürün", "Adet", "Durum", "Satıldığı Fiyat", "Birim ₺", "Satış Yeri", "Ödeme"].map((h) => (
-                                    <th key={h} style={thSmall}>
+                                    <th key={h} style={dsTh}>
                                       {h}
                                     </th>
                                   ))}
@@ -303,60 +289,45 @@ export function SoldProducts() {
                               <tbody>
                                 {(lines[g.sale_group_id] ?? []).map((l) => (
                                   <tr key={l.id}>
-                                    <td style={tdSmall}>{l.product_barcode}</td>
-                                    <td style={tdSmallStrong}>
+                                    <td style={dsTd}>{l.product_barcode}</td>
+                                    <td style={{ ...dsTd, fontWeight: 500 }}>
                                       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                                         <span>{l.name || "-"}</span>
                                         {refundedOf(l) > 0 && (
-                                          <span style={{ fontSize: 12, opacity: 0.75 }}>
+                                          <span style={{ fontSize: 12, color: C.ink3 }}>
                                             Kalan: {remainingOf(l)} / {l.qty}
                                           </span>
                                         )}
                                       </div>
                                     </td>
-                                    <td style={tdSmall}>{l.qty}</td>
-                                    <td style={tdSmall}>
+                                    <td style={dsTd}>{l.qty}</td>
+                                    <td style={dsTd}>
                                       {(() => {
                                         const r = refundedOf(l);
-                                        if (r <= 0) return "-";
+                                        if (r <= 0) return <span style={{ color: C.ink4 }}>—</span>;
                                         const fully = remainingOf(l) === 0;
                                         const k = kindOf(l);
-                                        const label = k === "EXCHANGE" ? "Değişim" : k === "RETURN" ? "İade" : "İade";
-                                        const txt = fully ? `${label.toUpperCase()}` : `${label}: ${r}/${l.qty}`;
-                                        return (
-                                          <span
-                                            style={{
-                                              display: "inline-block",
-                                              padding: "2px 8px",
-                                              borderRadius: 999,
-                                              background: fully ? "#ffe3e3" : "#fff3cd",
-                                              border: fully ? "1px solid #ffb3b3" : "1px solid #ffe08a",
-                                              fontSize: 12,
-                                              fontWeight: 600,
-                                              whiteSpace: "nowrap",
-                                            }}
-                                          >
-                                            {txt}
-                                          </span>
-                                        );
+                                        const label = k === "EXCHANGE" ? "Değişim" : "İade";
+                                        const txt = fully ? label : `${label}: ${r}/${l.qty}`;
+                                        return <span style={fully ? badgeRose : badgeAmber}>{txt}</span>;
                                       })()}
                                     </td>
-                                    <td style={tdSmall}>
+                                    <td style={dsTd}>
                                       {(() => {
                                         const list = (l.list_price ?? 0) || 0;
                                         const disc = (l.discount_amount ?? 0) || 0;
                                         const discounted = disc > 0 || (list > 0 && list > (l.unit_price ?? 0));
-                                        return discounted ? fmtMoney(l.unit_price) : "-";
+                                        return discounted ? fmtMoney(l.unit_price) : <span style={{ color: C.ink4 }}>—</span>;
                                       })()}
                                     </td>
-                                    <td style={tdSmall}>
+                                    <td style={dsTd}>
                                       {fmtMoney((l.list_price ?? 0) > 0 ? (l.list_price as number) : l.unit_price)}
                                     </td>
-                                    <td style={tdSmall}>{l.sold_from}</td>
-                                    <td style={tdSmall}>
+                                    <td style={dsTd}>{l.sold_from}</td>
+                                    <td style={dsTd}>
                                       {(() => {
                                         const pm = (l as any).payment_method ?? (g as any).payment_method;
-                                        if (!pm) return "-";
+                                        if (!pm) return <span style={{ color: C.ink4 }}>—</span>;
                                         const v = String(pm).toUpperCase();
                                         if (v === "CASH") return "Nakit";
                                         if (v === "CARD") return "Kart";
@@ -367,7 +338,7 @@ export function SoldProducts() {
                                 ))}
                                 {(lines[g.sale_group_id]?.length ?? 0) === 0 && (
                                   <tr>
-                                    <td colSpan={8} style={{ padding: 10, opacity: 0.7 }}>
+                                    <td colSpan={8} style={{ ...dsTd, color: C.ink4 }}>
                                       Detay yok.
                                     </td>
                                   </tr>
@@ -384,7 +355,7 @@ export function SoldProducts() {
 
               {filteredGroups.length === 0 && (
                 <tr>
-                  <td colSpan={5} style={{ padding: 12, opacity: 0.7 }}>
+                  <td colSpan={5} style={{ ...dsTd, color: C.ink4 }}>
                     Sonuç yok.
                   </td>
                 </tr>
@@ -397,37 +368,6 @@ export function SoldProducts() {
   );
 }
 
-const th: React.CSSProperties = {
-  textAlign: "left",
-  borderBottom: "1px solid #ddd",
-  padding: "10px 8px",
-  position: "sticky",
-  top: 0,
-  background: "white",
-};
-
-const td: React.CSSProperties = {
-  padding: "10px 8px",
-  borderBottom: "1px solid #f0f0f0",
-  whiteSpace: "nowrap",
-};
-
-const tdStrong: React.CSSProperties = { ...td, fontWeight: 700 };
-
-const thSmall: React.CSSProperties = {
-  textAlign: "left",
-  borderBottom: "1px solid #e5e5e5",
-  padding: "8px 6px",
-  background: "#fafafa",
-};
-
-const tdSmall: React.CSSProperties = {
-  padding: "8px 6px",
-  borderBottom: "1px solid #eee",
-  whiteSpace: "nowrap",
-};
-
-const tdSmallStrong: React.CSSProperties = { ...tdSmall, fontWeight: 600 };
 
 function fmtMoney(v: number | null | undefined) {
   return new Intl.NumberFormat("tr-TR", {
